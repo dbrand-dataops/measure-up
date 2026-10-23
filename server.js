@@ -1,6 +1,6 @@
 'use strict';
 // Dependency-free HTTP server (Node built-ins only; "pg" is loaded only when DATABASE_URL is set).
-// Static files are public. Everything under /api except /api/health needs the APP_TOKEN bearer token.
+// Static files are public. Everything under /api except /api/health and /api/questions needs the APP_TOKEN bearer token.
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -131,10 +131,10 @@ function createApp({ storage, token, production, bankPath }) {
 
   async function handleApi(req, res, pathname) {
     if (pathname === '/api/health') return sendJson(res, 200, { ok: true });
-    if (!authorise(req, res)) return;
     if (pathname === '/api/questions' && req.method === 'GET') {
       return send(res, 200, bankJson, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
     }
+    if (!authorise(req, res)) return;
     if (pathname === '/api/progress' && req.method === 'GET') {
       const cur = await storage.get();
       return sendJson(res, 200, { progress: SRS.normalize(cur), storage: storage.kind });

@@ -116,6 +116,7 @@
   }
   function syncText() {
     const s = state.sync;
+    if (s.status === 'needsauth') return state.token ? 'Token rejected, saved on this device' : 'Not synced, saved on this device';
     if (s.status === 'ok') {
       const d = new Date(s.at);
       return 'Synced ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
@@ -129,15 +130,14 @@
     pushTimer = setTimeout(function () { pushNow(false); }, 1200);
   }
   function onAuthError(e) {
-    if (e && e.code === 401) {
-      state.view = 'login';
-      state.error = 'The access token was rejected.';
-      render();
+    if (e && (e.code === 401 || e.code === 503)) {
+      setSync('needsauth');
       return true;
     }
     return false;
   }
   async function pushNow(quiet) {
+    if (!state.token) { setSync('needsauth'); return; }
     try {
       if (!quiet) setSync('syncing');
       const r = await api('/api/progress', { method: 'PUT', body: JSON.stringify(state.progress) });
@@ -150,6 +150,7 @@
     }
   }
   async function syncNow() {
+    if (!state.token) { setSync('needsauth'); return; }
     setSync('syncing');
     try {
       const r = await api('/api/progress');
@@ -702,7 +703,7 @@
 
     root.append(h('div', { class: 'panel' },
       h('h2', null, 'Sync'),
-      h('p', { class: 'muted' }, 'Progress is stored on this device and merged with the server (' + (state.storage || 'not connected') + '). The most recent review of each question wins.'),
+      h('p', { class: 'muted' }, 'Questions are open to everyone. Progress is always saved on this device. To sync it across devices, save your access token below, or open the sign-in link once on each device. Server storage: ' + (state.storage || 'not connected') + '.'),
       h('div', { class: 'actions' }, h('button', { class: 'btn', type: 'button', onclick: function () { syncNow(); } }, 'Sync now'))));
     root.append(h('div', { class: 'panel' },
       h('h2', null, 'Access token'),
@@ -715,8 +716,9 @@
       h('button', { class: 'btn', type: 'button', onclick: function () {
         lsDel(KEYS.token);
         state.token = '';
-        state.view = 'login';
-        render();
+        tokenInput.value = '';
+        setSync('needsauth');
+        msg.textContent = 'Token forgotten on this device.';
       } }, 'Forget token'))));
     root.append(h('div', { class: 'panel' },
       h('h2', null, 'Backup'),
@@ -774,7 +776,18 @@
 
   // ---------------------------------------------------------------- boot
 
+  function adoptHashToken() {
+    try {
+      const m = /[#&]token=([^&]+)/.exec(location.hash);
+      if (!m) return;
+      state.token = decodeURIComponent(m[1]).trim();
+      lsSet(KEYS.token, state.token);
+      history.replaceState(null, '', location.pathname + location.search);
+    } catch (e) { /* ignore */ }
+  }
+
   async function boot() {
+    adoptHashToken();
     state.view = 'boot';
     render();
     try {
@@ -782,8 +795,7 @@
       setBank(bank);
       try { lsSet(KEYS.bank, JSON.stringify(bank)); } catch (e) { /* ignore */ }
     } catch (e) {
-      if (e.code === 401) { state.view = 'login'; state.error = state.token ? 'The access token was rejected.' : ''; render(); return; }
-      let cached = null;
+            let cached = null;
       try { cached = JSON.parse(lsGet(KEYS.bank)); } catch (err) { /* ignore */ }
       if (cached && cached.items) {
         setBank(cached);

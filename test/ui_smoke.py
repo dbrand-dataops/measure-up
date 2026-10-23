@@ -14,12 +14,13 @@ try:
         pg.on("console", lambda m: errors.append(m.text) if m.type == "error" and "401" not in m.text else None)
         pg.on("pageerror", lambda e: errors.append(str(e)))
         pg.goto(f"http://localhost:{port}/")
-        pg.wait_for_selector("input[type=password]")
-        pg.fill("input[type=password]", "wrong"); pg.keyboard.press("Enter")
-        pg.wait_for_selector(".notice")
-        pg.fill("input[type=password]", token); pg.keyboard.press("Enter")
         pg.wait_for_selector("text=Items in scope")
-        assert "169" in pg.inner_text(".stats"), pg.inner_text(".stats")
+        assert "Not synced" in pg.inner_text("#sync-chip")
+        pg.click("text=Settings")
+        pg.fill("input[type=password]", token)
+        pg.click("text=Save token")
+        pg.click("text=Home")
+        pg.wait_for_function("document.getElementById('sync-chip').innerText.startsWith('Synced')")
         # flashcards
         pg.click("text=Flashcards")
         pg.wait_for_selector(".card")
@@ -55,8 +56,11 @@ try:
         pg2 = ctx.new_page()
         pg2.on("pageerror", lambda e: errors.append(str(e)))
         pg2.goto(f"http://localhost:{port}/")
-        pg2.fill("input[type=password]", token); pg2.keyboard.press("Enter")
         pg2.wait_for_selector("text=Items in scope")
+        pg2.click("text=Settings")
+        pg2.fill("input[type=password]", token)
+        pg2.click("text=Save token")
+        pg2.click("text=Home")
         pg2.wait_for_function("document.querySelector('.stats').innerText.match(/\\n?[1-9]\\d*\\s*\\n?Studied/) || true")
         time.sleep(1.5)
         txt = pg2.inner_text(".stats")
@@ -64,6 +68,10 @@ try:
         assert "Studied" in txt
         studied = int(txt.split("Studied")[0].split()[-1])
         assert studied >= 5, studied
+        pg3 = b.new_context().new_page()
+        pg3.goto(f"http://localhost:{port}/#token={token}")
+        pg3.wait_for_selector("text=Items in scope")
+        assert "token" not in pg3.url, pg3.url
         b.close()
 finally:
     srv.terminate()

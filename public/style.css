@@ -81,6 +81,7 @@ button.chip.on { background: var(--accent); color: var(--accent-text); border-co
 .chip.warn { color: var(--warn); border-color: var(--warn); background: var(--warn-bg); }
 .chip.trap { color: var(--bad); border-color: var(--bad); }
 .chip.sync.ok { color: var(--good); border-color: var(--good); }
+.chip.sync.needsauth { color: var(--muted); }
 .chip.sync.offline { color: var(--bad); border-color: var(--bad); }
 .filters .label { font-size: 0.85rem; color: var(--muted); margin: 10px 0 4px; }
 .filters .label:first-child { margin-top: 0; }

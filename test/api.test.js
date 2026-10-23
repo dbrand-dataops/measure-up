@@ -34,11 +34,13 @@ async function main() {
   assert.equal(r.status, 404);
 
   // auth
+  r = await fetch(base + '/api/progress');
+  assert.equal(r.status, 401);
+  r = await fetch(base + '/api/progress', { headers: { Authorization: 'Bearer wrong' } });
+  assert.equal(r.status, 401);
+  r = await fetch(base + '/api/progress', { method: 'PUT', body: '{}' });
+  assert.equal(r.status, 401);
   r = await fetch(base + '/api/questions');
-  assert.equal(r.status, 401);
-  r = await fetch(base + '/api/questions', { headers: { Authorization: 'Bearer wrong' } });
-  assert.equal(r.status, 401);
-  r = await fetch(base + '/api/questions', { headers: auth });
   assert.equal(r.status, 200);
   const bank = await r.json();
   assert.ok(bank.items.length > 100);
@@ -109,6 +111,8 @@ async function main() {
   await new Promise((r2) => closed.listen(0, '127.0.0.1', r2));
   const b2 = 'http://127.0.0.1:' + closed.address().port;
   r = await fetch(b2 + '/api/questions');
+  assert.equal(r.status, 200);
+  r = await fetch(b2 + '/api/progress');
   assert.equal(r.status, 503);
   await new Promise((res) => closed.close(res));
 

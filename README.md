@@ -20,7 +20,7 @@ All questions are marked unverified. Run the code in Power BI, DAX Studio or you
     npm test
     APP_TOKEN=choose-something npm start
 
-Open http://localhost:3000 and enter the token. Without APP_TOKEN the server runs open in development, and refuses to serve in production (503).
+Open http://localhost:3000. The questions are public. Progress is saved on the device, and syncing to the server needs the token (Settings, or open `/#token=YOURTOKEN` once per device). Without APP_TOKEN the server allows progress calls in development, and returns 503 for them in production.
 
 ## Deploy on Render
 
@@ -32,7 +32,7 @@ Open http://localhost:3000 and enter the token. Without APP_TOKEN the server run
    - Postgres: create a Render Postgres instance and set `DATABASE_URL` to its internal URL. The table is created on first start.
    - Paid persistent disk: mount it and set `DATA_DIR` to the mount path.
    Check Render's current free-tier terms before relying on any of these.
-5. Open the service URL on any computer and enter the token once. It is remembered in that browser.
+5. Open the service URL. To sync progress on a device, open `https://your-service.onrender.com/#token=YOURTOKEN` once. It is remembered in that browser.
 
 ## Editing questions
 
