@@ -1,0 +1,811 @@
+# DAX / M / Modelling interview question bank, draft v0.1
+#
+# Item types: flashcard | mcq | predict | bug | explain | pattern
+# Common fields: id, type, language (dax|m|modelling|security), topic, level (junior|mid|senior), tags, verified
+# verified: false on every item. Check each against Power BI Desktop or Microsoft docs before showing publicly.
+# Only items with verified: true should be served by a public build.
+#
+# flashcard: front, back, trap
+# mcq:       prompt, code (optional), options[{id, text, why}], answer
+# predict:   prompt, data (tables), code, output (table), explanation
+# bug:       symptom, code, diagnosis, fix
+# explain:   prompt, keyPoints[]
+# pattern:   name, scenario, code, notes
+
+meta:
+  version: "0.1"
+  model_assumption: "Sales fact table, Product / Customer / Region / Date dimensions, single-direction one-to-many relationships. Base measure [Total Sales] = SUM(Sales[Amount])."
+
+items:
+
+# ---------------------------------------------------------------- FLASHCARDS
+
+- id: dax-fc-001
+  type: flashcard
+  language: dax
+  topic: evaluation-context
+  level: junior
+  tags: [trap, core]
+  verified: false
+  front: |-
+    What is the difference between row context and filter context?
+  back: |-
+    Row context iterates a table one row at a time and lets an expression refer to the current row's column values. It exists in calculated columns and inside iterator functions (SUMX, FILTER, ADDCOLUMNS).
+    Filter context is the set of filters that decides which rows are visible to an aggregation. It comes from slicers, visual axes, page and report filters, and CALCULATE arguments.
+  trap: |-
+    Row context does not filter anything. A row context on Customer does not restrict Sales unless context transition happens.
+
+- id: dax-fc-002
+  type: flashcard
+  language: dax
+  topic: evaluation-context
+  level: mid
+  tags: [trap, core, most-asked]
+  verified: false
+  front: |-
+    What is context transition?
+  back: |-
+    When CALCULATE (or a measure reference, which is implicitly wrapped in CALCULATE) is evaluated inside a row context, the current row's column values are converted into filters in a new filter context. That is how an iterator can compute a per-row aggregate.
+  trap: |-
+    Every measure reference inside an iterator triggers a transition, which is costly over high-cardinality tables. If the iterated rows are not unique, the transition filters on all columns, so duplicate rows are grouped together and counted together.
+
+- id: dax-fc-003
+  type: flashcard
+  language: dax
+  topic: calculate
+  level: mid
+  tags: [trap]
+  verified: false
+  front: |-
+    What does a Boolean filter argument in CALCULATE actually do?
+    CALCULATE([Total Sales], Product[Colour] = "Red")
+  back: |-
+    It is shorthand for a filter over ALL of that column: FILTER(ALL(Product[Colour]), Product[Colour] = "Red"). It replaces any existing filter on Product[Colour] rather than intersecting with it.
+  trap: |-
+    A slicer on Colour = Blue is overridden, not combined. Wrap the filter in KEEPFILTERS to intersect. Boolean shorthand can only reference columns from a single table and cannot reference measures.
+
+- id: dax-fc-004
+  type: flashcard
+  language: dax
+  topic: calculate
+  level: mid
+  tags: [core]
+  verified: false
+  front: |-
+    ALL vs REMOVEFILTERS vs ALLEXCEPT vs ALLSELECTED: what does each do?
+  back: |-
+    ALL: removes filters from a table or columns; also returns a table of distinct values when used as a table function.
+    REMOVEFILTERS: same filter-removal effect, but only valid as a CALCULATE modifier. It states intent more clearly.
+    ALLEXCEPT: removes all filters on a table except the listed columns.
+    ALLSELECTED: removes filters coming from the visual's own rows and columns but keeps the outer filters (slicers, page filters). Used for share of the visible total.
+  trap: |-
+    ALLSELECTED depends on the visual and on shadow filter contexts, so results can surprise you. If you want the grand total regardless of slicers, use ALL.
+
+- id: dax-fc-005
+  type: flashcard
+  language: dax
+  topic: iterators
+  level: junior
+  tags: [core]
+  verified: false
+  front: |-
+    SUM vs SUMX: when do you need the X version?
+  back: |-
+    SUM aggregates one column. SUMX iterates a table, evaluates an expression for each row, then sums the results. Use SUMX when the value needs a row-level calculation first, such as Quantity * Price.
+    SUM(Sales[Amount]) is effectively SUMX(Sales, Sales[Amount]).
+  trap: |-
+    SUM(Sales[Qty] * Sales[Price]) is invalid because SUM takes a column reference. SUM(Qty) * SUM(Price) is valid but gives a different, wrong number.
+
+- id: dax-fc-006
+  type: flashcard
+  language: dax
+  topic: calculated-columns
+  level: junior
+  tags: [core]
+  verified: false
+  front: |-
+    Calculated column or measure: how do you choose?
+  back: |-
+    A calculated column is computed at refresh, stored in the model, and evaluated in row context. Use it for attributes you need to slice, filter, sort by or relate on.
+    A measure is computed at query time in filter context and stores nothing. Use it for anything that aggregates or must respond to user selections.
+  trap: |-
+    Ratios and percentages built as columns then summed give nonsense totals. Calculated columns also add model size and refresh time.
+
+- id: dax-fc-007
+  type: flashcard
+  language: dax
+  topic: time-intelligence
+  level: mid
+  tags: [core]
+  verified: false
+  front: |-
+    What makes a good date table for time intelligence?
+  back: |-
+    One row per day, contiguous with no gaps, covering whole calendar (or fiscal) years, unique non-blank date values of Date type, related to the fact table, and marked as the date table. It also carries the attributes you need: year, quarter, month, month number for sorting, fiscal fields.
+  trap: |-
+    Relying on auto date/time creates a hidden table per date column and bloats the model. Using a fact table date column with gaps for SAMEPERIODLASTYEAR and similar functions gives wrong or blank results.
+
+- id: dax-fc-008
+  type: flashcard
+  language: dax
+  topic: relationships
+  level: mid
+  tags: [trap]
+  verified: false
+  front: |-
+    How do you use an inactive relationship, and when would you?
+  back: |-
+    Wrap the calculation in CALCULATE and add USERELATIONSHIP(Sales[ShipDate], 'Date'[Date]). The inactive relationship becomes active for the duration of that CALCULATE only. Typical case: role-playing dimensions such as order date versus ship date against one Date table.
+  trap: |-
+    The relationship must already exist in the model as inactive. The alternative design is a separate date table per role, which suits cases where users must slice by both dates at once.
+
+- id: dax-fc-009
+  type: flashcard
+  language: dax
+  topic: calculate
+  level: senior
+  tags: [trap]
+  verified: false
+  front: |-
+    What does KEEPFILTERS do inside CALCULATE?
+  back: |-
+    It stops a CALCULATE filter argument from replacing the existing filter on that column. The new filter is intersected (AND-ed) with the filters already in context instead.
+  trap: |-
+    CALCULATE([Total Sales], KEEPFILTERS(Product[Colour] = "Red")) with a Blue slicer returns blank, because no row is both Red and Blue.
+
+- id: dax-fc-010
+  type: flashcard
+  language: dax
+  topic: performance
+  level: senior
+  tags: [core]
+  verified: false
+  front: |-
+    Storage engine vs formula engine: what is the difference and why does it matter for tuning?
+  back: |-
+    The storage engine (VertiPaq) scans compressed columns quickly and is multi-threaded for simple aggregations and filters. The formula engine handles the rest of DAX logic and is single-threaded. Fast queries push as much work as possible to the storage engine and keep materialised intermediate results small.
+    Tools: Performance Analyzer for visual timings, DAX Studio server timings for SE vs FE split, query plans for deeper analysis.
+  trap: |-
+    Common causes of slowness: iterators over high-cardinality columns, nested iterators, measures referencing measures inside large iterators, high-cardinality columns in the model, and bidirectional relationships.
+
+- id: dax-fc-011
+  type: flashcard
+  language: dax
+  topic: dax-basics
+  level: junior
+  tags: [core]
+  verified: false
+  front: |-
+    Why use variables (VAR) in a measure?
+  back: |-
+    Readability, and each variable is evaluated once and reused, which can avoid repeated computation. A variable is evaluated in the filter context where it is defined, not where it is used.
+  trap: |-
+    A variable defined outside CALCULATE keeps the outer context, so it will not respond to filters added inside the CALCULATE that uses it. This is the most common variable bug.
+
+- id: m-fc-001
+  type: flashcard
+  language: m
+  topic: query-folding
+  level: mid
+  tags: [trap, most-asked]
+  verified: false
+  front: |-
+    What is query folding and how do you check it?
+  back: |-
+    Power Query translates steps into a single native query (for example SQL) that the source executes, so filtering, grouping and joining happen at the source rather than in the mashup engine. Check by right-clicking a step and seeing whether View Native Query is enabled, or with Query Diagnostics.
+  trap: |-
+    Once a step breaks folding, every later step runs locally. Put foldable steps (filters, column selection) before non-foldable ones. Folding also matters for incremental refresh and for DirectQuery.
+
+- id: m-fc-002
+  type: flashcard
+  language: m
+  topic: incremental-refresh
+  level: senior
+  tags: [trap]
+  verified: false
+  front: |-
+    How do you set up incremental refresh, and what is the common filter mistake?
+  back: |-
+    Create two DateTime parameters named RangeStart and RangeEnd, filter the date column with them, then define the refresh policy on the table (store N periods, refresh last M periods). The filter should fold so each partition queries only its own range.
+  trap: |-
+    Use one inclusive and one exclusive boundary: date >= RangeStart and date < RangeEnd. Both inclusive duplicates boundary rows across partitions. The parameters must be exactly named and of DateTime type.
+
+- id: m-fc-003
+  type: flashcard
+  language: m
+  topic: language-basics
+  level: mid
+  tags: [core]
+  verified: false
+  front: |-
+    How is an M query structured, and what does lazy evaluation mean for it?
+  back: |-
+    A let ... in expression: each step is a named value referring to earlier steps, and the in clause names the result. Evaluation is lazy and demand-driven: a step is only computed if the final result depends on it, and order of definition is not order of execution.
+  trap: |-
+    Because evaluation is lazy, a source can be hit multiple times if a step is referenced more than once. Table.Buffer forces a table into memory to stabilise this, but it breaks folding for later steps and uses memory.
+
+- id: m-fc-004
+  type: flashcard
+  language: m
+  topic: error-handling
+  level: mid
+  tags: [core]
+  verified: false
+  front: |-
+    How do you handle errors in M?
+  back: |-
+    try expr otherwise fallback for simple cases, or try expr to get a record with HasError, Value and Error fields for detail. For column-level issues, Table.ReplaceErrorValues, Table.RemoveRowsWithErrors, or Table.SelectColumns with MissingField.UseNull for schema drift.
+  trap: |-
+    Errors in a column can sit unnoticed until refresh. Replacing errors with null silently hides data problems, so log or count them when it matters.
+
+- id: m-fc-005
+  type: flashcard
+  language: m
+  topic: merges
+  level: mid
+  tags: [trap]
+  verified: false
+  front: |-
+    A left outer merge increased your row count. Why?
+  back: |-
+    The right table has duplicate values in the join key, so each left row matches several right rows and the expanded result multiplies rows. Check key uniqueness on the right side, deduplicate with Table.Distinct on the key, or aggregate before merging.
+  trap: |-
+    A merge is not a lookup. Treat it as a join and verify the cardinality you expect.
+
+- id: mod-fc-001
+  type: flashcard
+  language: modelling
+  topic: star-schema
+  level: junior
+  tags: [core]
+  verified: false
+  front: |-
+    Why a star schema for Power BI?
+  back: |-
+    Narrow fact tables of measurable events at a declared grain, surrounded by dimensions holding descriptive attributes, joined by single-direction one-to-many relationships. It compresses well in VertiPaq, filters predictably, keeps DAX simple, and avoids ambiguous filter paths.
+  trap: |-
+    Always state the grain of the fact table first. Interviewers use that as a quick test of modelling discipline.
+
+- id: mod-fc-002
+  type: flashcard
+  language: modelling
+  topic: logic-placement
+  level: senior
+  tags: [most-asked]
+  verified: false
+  front: |-
+    Where should transformation and business logic live: warehouse/dbt, Power Query, or DAX?
+  back: |-
+    Push logic as far upstream as is practical. Warehouse or dbt: cleaning, joins, conformed definitions and anything reused across reports (testable, version controlled, reusable). Power Query: light shaping when there is no upstream layer, ideally folding. DAX: logic that must respond to user filter context, such as ratios, time intelligence and dynamic aggregations.
+  trap: |-
+    Answering "DAX for everything" or "Power Query for everything" signals inexperience. Name the tradeoffs: reuse, testability, refresh cost, and where the definition of the metric is owned.
+
+- id: sec-fc-001
+  type: flashcard
+  language: security
+  topic: rls
+  level: mid
+  tags: [trap]
+  verified: false
+  front: |-
+    How does row-level security work in Power BI, and who does it not apply to?
+  back: |-
+    Roles contain DAX filter expressions on tables. Filters propagate along relationships in the filtering direction. Dynamic RLS maps USERPRINCIPALNAME() to a security table. Test with View as in Desktop and in the service.
+    It restricts users with the Viewer role. Workspace Admins, Members and Contributors can see all data.
+  trap: |-
+    Filtering a dimension does not secure data via a bidirectional route unless "apply security filter in both directions" is enabled. Test RLS with a real viewer account, not as the author.
+
+# ---------------------------------------------------------------- MULTIPLE CHOICE
+
+- id: dax-mcq-001
+  type: mcq
+  language: dax
+  topic: evaluation-context
+  level: mid
+  tags: [trap, most-asked]
+  verified: false
+  prompt: |-
+    A calculated column is added to the Customer table. The Sales table is related to Customer (one-to-many). What does the column show for each customer?
+  code: |-
+    Customer Sales = SUM(Sales[Amount])
+  options:
+    - id: A
+      text: Each customer's own sales total
+      why: This is the classic assumption. Row context does not filter related tables, so no per-customer filtering occurs without context transition.
+    - id: B
+      text: The grand total of all sales, identical on every row
+      why: Correct. There is no CALCULATE, so no context transition, and SUM is evaluated with no filters on Sales.
+    - id: C
+      text: An error because SUM cannot be used in a calculated column
+      why: SUM is valid in calculated columns. It just returns an unfiltered result here.
+    - id: D
+      text: Blank for every row
+      why: Sales has data and is unfiltered, so the result is not blank.
+  answer: B
+
+- id: dax-mcq-002
+  type: mcq
+  language: dax
+  topic: calculate
+  level: mid
+  tags: [trap]
+  verified: false
+  prompt: |-
+    A slicer on Product[Colour] is set to Blue. What does this measure return?
+  code: |-
+    Red Sales = CALCULATE([Total Sales], Product[Colour] = "Red")
+  options:
+    - id: A
+      text: Blank
+      why: This would happen only with KEEPFILTERS, which intersects the filters.
+    - id: B
+      text: Sales for Blue products
+      why: The slicer filter on Colour is replaced by the measure's filter, not kept.
+    - id: C
+      text: Sales for Red products
+      why: Correct. The Boolean argument is FILTER(ALL(Product[Colour]), ...) and overrides the slicer's filter on that column.
+    - id: D
+      text: An error because the filter conflicts with the slicer
+      why: DAX does not raise conflicts between filters. It applies the override rules silently.
+  answer: C
+
+- id: dax-mcq-003
+  type: mcq
+  language: dax
+  topic: calculate
+  level: mid
+  tags: [core, most-asked]
+  verified: false
+  prompt: |-
+    Which measure gives each product's share of the grand total across all products, while still respecting a slicer on the Region dimension table?
+  options:
+    - id: A
+      text: DIVIDE([Total Sales], [Total Sales])
+      why: Always returns 1 where there are sales.
+    - id: B
+      text: DIVIDE([Total Sales], CALCULATE([Total Sales], ALL(Sales)))
+      why: ALL(Sales) clears filters on the fact table's own columns only. Filters on the Product table still propagate to Sales, so the denominator is not the grand total.
+    - id: C
+      text: DIVIDE([Total Sales], CALCULATE([Total Sales], ALL(Product)))
+      why: Correct. It removes the product filters from the denominator and leaves the Region filter intact.
+    - id: D
+      text: DIVIDE([Total Sales], CALCULATE([Total Sales], ALL()))
+      why: ALL() with no arguments clears every filter, including the Region slicer, which breaks the requirement.
+  answer: C
+
+- id: dax-mcq-004
+  type: mcq
+  language: dax
+  topic: iterators
+  level: junior
+  tags: [core]
+  verified: false
+  prompt: |-
+    Sales has Quantity and UnitPrice columns but no revenue column. Which measure returns total revenue?
+  options:
+    - id: A
+      text: SUM(Sales[Quantity] * Sales[UnitPrice])
+      why: Invalid. SUM accepts a column reference, not an expression.
+    - id: B
+      text: SUM(Sales[Quantity]) * SUM(Sales[UnitPrice])
+      why: Valid syntax, wrong maths. It multiplies the totals instead of summing row-level products.
+    - id: C
+      text: SUMX(Sales, Sales[Quantity] * Sales[UnitPrice])
+      why: Correct. SUMX evaluates the expression per row and sums the results.
+    - id: D
+      text: CALCULATE(SUM(Sales[Quantity] * Sales[UnitPrice]))
+      why: Still invalid. CALCULATE does not change what SUM accepts.
+  answer: C
+
+- id: dax-mcq-005
+  type: mcq
+  language: dax
+  topic: dax-basics
+  level: junior
+  tags: [core]
+  verified: false
+  prompt: |-
+    What does DIVIDE([Numerator], [Denominator]) return when the denominator is zero and no third argument is supplied?
+  options:
+    - id: A
+      text: An error
+      why: This is what the / operator does. DIVIDE exists to avoid that.
+    - id: B
+      text: BLANK
+      why: Correct. The optional alternate result defaults to BLANK.
+    - id: C
+      text: 0
+      why: Only if you pass 0 as the third argument.
+    - id: D
+      text: Infinity
+      why: The / operator can return Infinity for division by zero. DIVIDE does not.
+  answer: B
+
+- id: dax-mcq-006
+  type: mcq
+  language: dax
+  topic: relationships
+  level: mid
+  tags: [core]
+  verified: false
+  prompt: |-
+    Sales has OrderDate and ShipDate, both related to the Date table. OrderDate is the active relationship. How do you compute sales by ship date?
+  options:
+    - id: A
+      text: CALCULATE([Total Sales], USERELATIONSHIP(Sales[ShipDate], 'Date'[Date]))
+      why: Correct, given the ShipDate relationship exists and is inactive. It activates for that CALCULATE only.
+    - id: B
+      text: Swap which relationship is active whenever the report needs ship date
+      why: Not possible at report time, and it would break every other measure that relies on the active one.
+    - id: C
+      text: Create a bidirectional relationship on ShipDate
+      why: Bidirectional filtering changes filter direction, not which relationship is used, and risks ambiguity.
+    - id: D
+      text: Use FILTER(Sales, Sales[ShipDate] = 'Date'[Date])
+      why: This needs row context to resolve and does not respond to the Date table filter context properly.
+  answer: A
+
+- id: dax-mcq-007
+  type: mcq
+  language: modelling
+  topic: logic-placement
+  level: senior
+  tags: [most-asked]
+  verified: false
+  prompt: |-
+    A customer segment (Gold, Silver, Bronze) is derived from lifetime spend. It must be used as a slicer and be consistent across five reports built on different semantic models. Where should it be defined?
+  options:
+    - id: A
+      text: As a DAX measure in each semantic model
+      why: A measure cannot be placed on a slicer as a category, and five copies will drift.
+    - id: B
+      text: As a calculated column in each model
+      why: Works, but five copies of the logic, no shared tests, and it adds refresh cost to each model.
+    - id: C
+      text: Upstream in the warehouse or dbt layer as a column on the customer dimension
+      why: Correct. One governed definition, tested once, consumed by every model, and available as a normal attribute.
+    - id: D
+      text: In Excel before the data is loaded
+      why: Manual, unversioned and not repeatable.
+  answer: C
+
+- id: m-mcq-001
+  type: mcq
+  language: m
+  topic: query-folding
+  level: mid
+  tags: [core]
+  verified: false
+  prompt: |-
+    Source is SQL Server. Which step is most likely to break query folding?
+  options:
+    - id: A
+      text: Filtering rows on a column value
+      why: Translates to a WHERE clause.
+    - id: B
+      text: Removing columns
+      why: Translates to a narrower SELECT list.
+    - id: C
+      text: Group By with a sum
+      why: Translates to GROUP BY.
+    - id: D
+      text: Adding a column that calls a custom M function with logic that has no SQL equivalent
+      why: Correct. The engine cannot translate arbitrary M, so folding stops at this step and later steps run locally.
+  answer: D
+
+- id: m-mcq-002
+  type: mcq
+  language: m
+  topic: incremental-refresh
+  level: senior
+  tags: [trap]
+  verified: false
+  prompt: |-
+    Which filter is correct for an incremental refresh table?
+  options:
+    - id: A
+      text: "[OrderDate] >= RangeStart and [OrderDate] <= RangeEnd"
+      why: Both ends inclusive, so a row exactly on a boundary lands in two partitions and is duplicated.
+    - id: B
+      text: "[OrderDate] >= RangeStart and [OrderDate] < RangeEnd"
+      why: Correct. One inclusive and one exclusive boundary means every row belongs to exactly one partition.
+    - id: C
+      text: "[OrderDate] > RangeStart and [OrderDate] < RangeEnd"
+      why: Both exclusive, so rows exactly on RangeStart are dropped.
+    - id: D
+      text: "[OrderDate] = RangeStart"
+      why: Matches only one instant, not a range.
+  answer: B
+
+- id: sec-mcq-001
+  type: mcq
+  language: security
+  topic: rls
+  level: mid
+  tags: [trap]
+  verified: false
+  prompt: |-
+    RLS works when tested with View as, but a colleague who is a Member of the workspace sees all rows. Why?
+  options:
+    - id: A
+      text: RLS requires Premium capacity
+      why: RLS is not restricted to Premium.
+    - id: B
+      text: RLS only restricts users with the Viewer role, not Admins, Members or Contributors
+      why: Correct. Workspace roles with edit rights bypass RLS, so share the app or report with colleagues as viewers to test properly.
+    - id: C
+      text: The DAX filter expression is evaluated only once per day
+      why: Not how RLS works. Filters apply at query time per user.
+    - id: D
+      text: RLS does not apply to imported data
+      why: RLS applies to import models. It is a core use case.
+  answer: B
+
+# ---------------------------------------------------------------- PREDICT THE OUTPUT
+
+- id: dax-pred-001
+  type: predict
+  language: dax
+  topic: calculate
+  level: mid
+  tags: [core]
+  verified: false
+  prompt: |-
+    Given this Sales table, what does a table visual with Region on rows show for the three measures, including the Total row?
+  data:
+    Sales:
+      columns: [Region, Amount]
+      rows:
+        - [East, 100]
+        - [East, 200]
+        - [West, 300]
+  code: |-
+    Total = SUM(Sales[Amount])
+    All Regions = CALCULATE(SUM(Sales[Amount]), ALL(Sales[Region]))
+    Share = DIVIDE([Total], [All Regions])
+  output:
+    columns: [Region, Total, All Regions, Share]
+    rows:
+      - [East, 300, 600, "50%"]
+      - [West, 300, 600, "50%"]
+      - [Total, 600, 600, "100%"]
+  explanation: |-
+    East is 100 + 200 = 300 and West is 300. ALL(Sales[Region]) removes the region filter, so every row's denominator is 600. The Total row has no region filter, so Total and All Regions are both 600 and the share is 100%.
+
+- id: dax-pred-002
+  type: predict
+  language: dax
+  topic: rankx
+  level: mid
+  tags: [trap]
+  verified: false
+  prompt: |-
+    What rank does each product get?
+  data:
+    Product sales:
+      columns: [Product, Total Sales]
+      rows:
+        - [A, 50]
+        - [B, 80]
+        - [C, 80]
+        - [D, 20]
+  code: |-
+    Rank = RANKX(ALL(Product[Name]), [Total Sales])
+  output:
+    columns: [Product, Rank]
+    rows:
+      - [B, 1]
+      - [C, 1]
+      - [A, 3]
+      - [D, 4]
+  explanation: |-
+    RANKX defaults to descending order and to Skip for ties. B and C tie at rank 1, so the next rank is 3, not 2. Passing Dense as the ties argument would give A = 2 and D = 3.
+
+# ---------------------------------------------------------------- SPOT THE BUG
+
+- id: dax-bug-001
+  type: bug
+  language: dax
+  topic: calculated-columns
+  level: junior
+  tags: [trap, core]
+  verified: false
+  symptom: |-
+    A table visual shows Margin % per product correctly (about 30% each), but the Total row shows 2,400%.
+  code: |-
+    -- calculated column on Sales
+    Margin % = DIVIDE(Sales[Profit], Sales[Revenue])
+  diagnosis: |-
+    The ratio is a row-level calculated column, and the visual sums the column. The sum of ratios is meaningless.
+  fix: |-
+    Make it a measure: Margin % = DIVIDE(SUM(Sales[Profit]), SUM(Sales[Revenue])). It recalculates in whatever filter context applies, including the total row.
+
+- id: dax-bug-002
+  type: bug
+  language: dax
+  topic: time-intelligence
+  level: mid
+  tags: [trap]
+  verified: false
+  symptom: |-
+    Prior-year sales are blank or wrong for many periods. The measure uses the fact table's date column and the data has no sales on weekends.
+  code: |-
+    PY Sales = CALCULATE([Total Sales], SAMEPERIODLASTYEAR(Sales[OrderDate]))
+  diagnosis: |-
+    Time intelligence functions need a contiguous date column. The fact table's OrderDate has gaps (and duplicates), so date shifting does not behave correctly.
+  fix: |-
+    Build a proper Date table with every day, mark it as the date table, relate it to Sales[OrderDate], and use 'Date'[Date] inside SAMEPERIODLASTYEAR.
+
+- id: m-bug-001
+  type: bug
+  language: m
+  topic: error-handling
+  level: mid
+  tags: [core]
+  verified: false
+  symptom: |-
+    Refresh fails with: Expression.Error: The column 'Amount' of the table wasn't found. The source team renamed the column in a recent release.
+  code: |-
+    let
+        Source = Sql.Database("server", "db"),
+        Sales = Source{[Schema="dbo", Item="Sales"]}[Data],
+        Picked = Table.SelectColumns(Sales, {"OrderID", "Amount"})
+    in
+        Picked
+  diagnosis: |-
+    Table.SelectColumns throws when a named column is missing. The step is not defensive against schema drift.
+  fix: |-
+    Table.SelectColumns(Sales, {"OrderID", "Amount"}, MissingField.UseNull) returns nulls for missing columns so refresh succeeds, but add a check or data quality test so silent nulls are noticed. Better still, agree a contract with the source team or select from a stable view.
+
+- id: m-bug-002
+  type: bug
+  language: m
+  topic: merges
+  level: mid
+  tags: [trap]
+  verified: false
+  symptom: |-
+    After merging Orders (10,000 rows) with Customers using a left outer join and expanding, the result has 10,450 rows.
+  code: |-
+    Merged = Table.NestedJoin(Orders, {"CustomerID"}, Customers, {"CustomerID"}, "Customer", JoinKind.LeftOuter)
+  diagnosis: |-
+    CustomerID is not unique in Customers, so some orders match multiple customer rows and expand into multiple output rows.
+  fix: |-
+    Check the key with a Group By count, deduplicate Customers (Table.Distinct on CustomerID, or keep the correct current record), then merge again. Add a row count check after merges.
+
+# ---------------------------------------------------------------- EXPLAIN ALOUD
+
+- id: dax-exp-001
+  type: explain
+  language: dax
+  topic: evaluation-context
+  level: mid
+  tags: [most-asked, confidence]
+  verified: false
+  prompt: |-
+    Explain context transition to a colleague who knows SQL but not DAX. Aim for 60 seconds.
+  keyPoints:
+    - Row context knows the current row but does not filter other tables
+    - CALCULATE converts that row's values into filters
+    - That is why a measure inside an iterator gives a per-row result
+    - Measures are implicitly wrapped in CALCULATE
+    - Cost and duplicate-row implications
+    - A concrete example, such as per-customer sales in a calculated column
+
+- id: mod-exp-001
+  type: explain
+  language: modelling
+  topic: logic-placement
+  level: senior
+  tags: [most-asked, confidence]
+  verified: false
+  prompt: |-
+    A stakeholder asks why their metric is calculated in the warehouse rather than in the Power BI report. Explain your reasoning.
+  keyPoints:
+    - One definition of the metric, reused by every report
+    - Testable and version controlled (dbt tests, Git)
+    - Reduces refresh and report load
+    - Folding and DirectQuery implications
+    - What does belong in DAX: context-sensitive logic such as ratios and time intelligence
+    - Governance: who owns the definition
+
+# ---------------------------------------------------------------- PATTERN LIBRARY (write from memory)
+
+- id: dax-pat-001
+  type: pattern
+  language: dax
+  topic: time-intelligence
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: Year-over-year growth %
+  scenario: |-
+    Show percentage change in sales versus the same period last year.
+  code: |-
+    YoY % =
+    VAR _Current = [Total Sales]
+    VAR _Prior =
+        CALCULATE ( [Total Sales], SAMEPERIODLASTYEAR ( 'Date'[Date] ) )
+    RETURN
+        DIVIDE ( _Current - _Prior, _Prior )
+  notes: |-
+    Needs a marked, contiguous Date table. DIVIDE handles a missing prior year. DATEADD('Date'[Date], -1, YEAR) is an equivalent alternative.
+
+- id: dax-pat-002
+  type: pattern
+  language: dax
+  topic: time-intelligence
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: Running total
+  scenario: |-
+    Cumulative sales up to the latest date in the current context.
+  code: |-
+    Running Total =
+    CALCULATE (
+        [Total Sales],
+        FILTER (
+            ALL ( 'Date'[Date] ),
+            'Date'[Date] <= MAX ( 'Date'[Date] )
+        )
+    )
+  notes: |-
+    ALL on the Date column only removes filters on that column. Filters on other Date columns such as Year still apply, which usually gives a running total within the year. Use ALL('Date') to run across all years.
+
+- id: dax-pat-003
+  type: pattern
+  language: dax
+  topic: calculate
+  level: junior
+  tags: [interview-staple]
+  verified: false
+  name: Percentage of total
+  scenario: |-
+    Each product's share of the grand total, respecting other filters.
+  code: |-
+    % of Total =
+    DIVIDE (
+        [Total Sales],
+        CALCULATE ( [Total Sales], REMOVEFILTERS ( Product ) )
+    )
+  notes: |-
+    REMOVEFILTERS(Product) clears product filters only. Use ALLSELECTED(Product) instead to get the share of the visible total.
+
+- id: dax-pat-004
+  type: pattern
+  language: dax
+  topic: time-intelligence
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: Rolling 3-month sales
+  scenario: |-
+    Sum of sales across the last three months ending at the current month.
+  code: |-
+    Sales Rolling 3M =
+    CALCULATE (
+        [Total Sales],
+        DATESINPERIOD ( 'Date'[Date], MAX ( 'Date'[Date] ), -3, MONTH )
+    )
+  notes: |-
+    Divide by 3 for an average only when all three months are complete and populated. Early months have fewer than three months of history.
+
+- id: dax-pat-005
+  type: pattern
+  language: dax
+  topic: rankx
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: Rank within category
+  scenario: |-
+    Rank products by sales within each category.
+  code: |-
+    Rank In Category =
+    RANKX (
+        ALLEXCEPT ( Product, Product[Category] ),
+        [Total Sales]
+    )
+  notes: |-
+    Iterates product rows that share the current category, so Product must be at one row per product. Add the Dense ties argument if gaps in ranking are not wanted.

@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: dax-m-prep
+    runtime: node
+    plan: free
+    buildCommand: npm install --omit=dev
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: APP_TOKEN
+        sync: false
+      # Optional: paste a Render Postgres internal URL here to keep progress across deploys.
+      - key: DATABASE_URL
+        sync: false

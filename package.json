@@ -1,0 +1,22 @@
+{
+  "name": "dax-m-prep",
+  "version": "1.0.0",
+  "description": "Personal DAX, M, SQL and Power BI interview preparation app with spaced repetition",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build:bank": "node scripts/build-bank.js",
+    "validate": "node validate.js",
+    "test": "node test/srs.test.js && node test/api.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "pg": "^8.11.5"
+  },
+  "devDependencies": {
+    "js-yaml": "^4.1.0"
+  }
+}

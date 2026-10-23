@@ -1,0 +1,994 @@
+# Banner / student records / higher education analytics question bank, draft v0.2
+# Same schema as question-bank.yaml v0.1. Extra languages used here: sql, banner, he-data.
+#
+# IMPORTANT: Banner table and column details below come from general knowledge of Ellucian Banner.
+# Codes, flags and table choices differ between institutions and Banner versions. Check every Banner
+# item against your own instance (and replace names with your own where they differ) before relying on it.
+# verified: false on every item.
+
+meta:
+  version: "0.2"
+  focus: "Banner student records, effective-dated data, identity reconciliation, multiple data sources, HE metrics, student data governance"
+  model_assumption: "Banner-derived tables landed in Snowflake, modelled with dbt, consumed in Power BI. Student keyed on PIDM."
+
+items:
+
+# ---------------------------------------------------------------- FLASHCARDS: BANNER AND DATA MODEL
+
+- id: bn-fc-001
+  type: flashcard
+  language: banner
+  topic: identity
+  level: junior
+  tags: [core, trap]
+  verified: false
+  front: |-
+    In Banner, what is the PIDM and why is it the join key for person-level data?
+  back: |-
+    The PIDM is Banner's internal numeric person identifier. It is assigned once and shared across modules, so person-level tables (SPRIDEN, SPBPERS, SFRSTCR, SGBSTDN and others) all carry a PIDM column and join on it. The visible student ID (SPRIDEN_ID) is a separate attribute.
+  trap: |-
+    Do not join on the visible ID. It can change, appears in more than one SPRIDEN row where a person has history, and other systems often store it with different formatting. Treat the PIDM as an internal key and use a pseudonymised surrogate in shared outputs.
+
+- id: bn-fc-002
+  type: flashcard
+  language: banner
+  topic: identity
+  level: mid
+  tags: [trap, most-asked]
+  verified: false
+  front: |-
+    SPRIDEN holds name and ID history. How do you get the current row for a person?
+  back: |-
+    Filter to SPRIDEN_CHANGE_IND IS NULL. Historical rows carry a change indicator (commonly I for an ID change and N for a name change). Also filter SPRIDEN_ENTITY_IND = 'P' if you want persons only, since non-person entities live in the same table.
+  trap: |-
+    Joining SPRIDEN without the change indicator filter multiplies rows for anyone with a name or ID change, which inflates headcounts silently.
+
+- id: bn-fc-003
+  type: flashcard
+  language: banner
+  topic: naming
+  level: junior
+  tags: [core]
+  verified: false
+  front: |-
+    How are Banner tables named, and what are STV tables?
+  back: |-
+    Names follow a pattern of system letter, module letter and a type letter. Examples: SPBPERS and SGBSTDN are base tables (B), SPRIDEN, SPRADDR and SFRSTCR are repeating tables (R), and STV tables are validation tables, the code lists behind coded columns such as term, status and level (STVTERM, for example).
+  trap: |-
+    Coded columns hold codes, not descriptions. Join to the relevant STV table (or a dbt seed or dimension built from it) to get readable values, and carry the code as well as the description.
+
+- id: bn-fc-004
+  type: flashcard
+  language: banner
+  topic: effective-dating
+  level: senior
+  tags: [trap, most-asked]
+  verified: false
+  front: |-
+    How do you get the student record that applies to a given term from an effective-dated table such as SGBSTDN?
+  back: |-
+    SGBSTDN has a row per person per effective term (SGBSTDN_TERM_CODE_EFF). The row that applies to a term is the one with the greatest effective term that does not exceed it. In Snowflake: filter term_code_eff <= the term, then QUALIFY ROW_NUMBER() OVER (PARTITION BY pidm ORDER BY term_code_eff DESC) = 1.
+    Newer Banner curriculum data is held in SORLCUR and SORLFOS with sequence numbers and current or active flags. Know which your instance treats as authoritative.
+  trap: |-
+    Joining term = effective term drops students with no row for that term. Taking the maximum effective term overall picks future-dated rows. Using both SGBSTDN and SORLCUR for the same attributes can double count.
+
+- id: bn-fc-005
+  type: flashcard
+  language: banner
+  topic: architecture
+  level: mid
+  tags: [core]
+  verified: false
+  front: |-
+    Why not run analytics straight off the production Banner database?
+  back: |-
+    It competes with transactional load, the schema is highly normalised, coded values need validation-table joins, many tables are updated in place so history is lost, and access is hard to govern. Replicate into a warehouse (raw layer untouched), build history with snapshots, model with dbt, and serve BI from the modelled layer. Banner's own reporting layers such as the ODS exist, but the same governance and history questions apply.
+  trap: |-
+    A good answer also covers refresh cadence, how deletes in the source are detected, and how reconciliation to the source system is demonstrated.
+
+- id: bn-fc-006
+  type: flashcard
+  language: banner
+  topic: snapshots
+  level: mid
+  tags: [trap, most-asked]
+  verified: false
+  front: |-
+    Your enrolment number differs from the figure in last year's published return. What is the most likely cause?
+  back: |-
+    Official returns use data frozen as at a census or reference date. Live Banner data keeps changing through late registrations, corrections, withdrawals and status changes. Reproducible reporting needs the as-at date stated and snapshots kept, so a historical number can be regenerated.
+  trap: |-
+    Re-running last year's report on live data and expecting the same answer. Capture snapshots at the census date and report from them for official figures.
+
+# ---------------------------------------------------------------- FLASHCARDS: HE METRICS
+
+- id: he-fc-001
+  type: flashcard
+  language: he-data
+  topic: metrics
+  level: junior
+  tags: [core, trap]
+  verified: false
+  front: |-
+    Headcount, enrolments and FTE: what is the difference?
+  back: |-
+    Headcount counts distinct students. Enrolments (registrations) count student-programme or student-module records, so one student can be counted several times. FTE weights each student by study load. Headcount is not additive across programmes, since a student on two programmes appears in both rows but only once in the total.
+  trap: |-
+    Summing headcount from rows. Totals need DISTINCTCOUNT at the student grain, and the grain of the fact table must be stated before choosing the measure.
+
+- id: he-fc-002
+  type: flashcard
+  language: he-data
+  topic: metrics
+  level: senior
+  tags: [most-asked]
+  verified: false
+  front: |-
+    How do you define and calculate a continuation or retention rate?
+  back: |-
+    Fix four things first: the cohort (for example entrants to a given year, level, mode and domicile), the follow-up point (still enrolled or qualified at the same census the next year), the exclusions, and the denominator. Retention is retained cohort members divided by the cohort. Regulatory indicators such as the OfS continuation, completion and progression measures have precise definitions, so check the current published methodology rather than relying on memory.
+  trap: |-
+    Quietly changing the cohort definition between years, or counting new students in the follow-up term as retained.
+
+- id: he-fc-003
+  type: flashcard
+  language: he-data
+  topic: governance
+  level: mid
+  tags: [core, trap]
+  verified: false
+  front: |-
+    How do UK GDPR and disclosure control apply to student analytics?
+  back: |-
+    Student data includes special category data such as ethnicity, disability and health, so the lawful basis, minimisation, access control and retention need to be defensible and documented (a DPIA for new uses). Small counts can identify individuals, so apply an agreed disclosure-control rule (suppress, round, or aggregate) in the semantic layer, and watch for secondary disclosure through totals and subtotals.
+  trap: |-
+    Hiding a visual or using conditional formatting does not protect data that is still in the model. RLS filters rows, not small counts.
+
+# ---------------------------------------------------------------- FLASHCARDS: MULTIPLE SOURCES
+
+- id: ms-fc-001
+  type: flashcard
+  language: modelling
+  topic: identity-reconciliation
+  level: senior
+  tags: [most-asked, confidence]
+  verified: false
+  front: |-
+    How do you reconcile student identities across two systems with no guaranteed shared key?
+  back: |-
+    Normalise first (trim, case, remove formatting, pad IDs). Match deterministically in tiers: exact shared ID, then ID plus date of birth, then name plus date of birth plus another attribute. Record which rule matched and a confidence level. Route unmatched and ambiguous records to an exceptions table for review. Never auto-merge on name alone, and track match rate over time.
+  trap: |-
+    Fuzzy matching on names alone creates false positives that are hard to detect and unsafe for student data. Keep a mapping table so decisions are auditable and reversible.
+
+- id: ms-fc-002
+  type: flashcard
+  language: m
+  topic: privacy-levels
+  level: mid
+  tags: [trap]
+  verified: false
+  front: |-
+    What are Power Query privacy levels, and what causes the Formula.Firewall error?
+  back: |-
+    Each source is marked Public, Organizational or Private, which controls whether data from one source may be sent to another when queries are combined. Formula.Firewall appears when a single step both references another query and accesses a data source directly, which could leak data between sources. Fix it by restructuring: one query per source, and a separate query that combines them.
+  trap: |-
+    "Ignore privacy levels" silences the error but removes the protection. Avoid it for student data.
+
+- id: ms-fc-003
+  type: flashcard
+  language: dax
+  topic: composite-models
+  level: senior
+  tags: [trap]
+  verified: false
+  front: |-
+    What are the trade-offs of a composite model that mixes Import and DirectQuery tables from different sources?
+  back: |-
+    You get fresh data from a large source alongside fast imported dimensions. Relationships between tables in different source groups are limited relationships: uniqueness is not guaranteed, blank-row handling differs, and RELATED cannot be used across them. Dual storage mode on shared dimensions helps. Cross-source joins can be expensive.
+  trap: |-
+    Often the better answer is to land all sources in one warehouse and model there. Composite models are a compromise when that is not possible.
+
+- id: ms-fc-004
+  type: flashcard
+  language: m
+  topic: gateway
+  level: mid
+  tags: [core]
+  verified: false
+  front: |-
+    How is on-premises Oracle (Banner) data refreshed in the Power BI service?
+  back: |-
+    Typically through an on-premises data gateway with the Oracle client software installed on the gateway machine, with the data source and credentials configured in the service, and a refresh schedule. If Banner is replicated into a cloud warehouse such as Snowflake, no gateway is needed for that source.
+  trap: |-
+    Gateway as a single point of failure and a bottleneck. Mention gateway clustering, monitoring and the case for moving transformation upstream.
+
+# ---------------------------------------------------------------- FLASHCARDS: SECURITY AND ENGINEERING
+
+- id: sec-fc-002
+  type: flashcard
+  language: security
+  topic: snowflake-rbac
+  level: senior
+  tags: [core]
+  verified: false
+  front: |-
+    How would you design RBAC for student data in Snowflake?
+  back: |-
+    Roles by function rather than by person, arranged in a hierarchy (access roles that hold object privileges, granted to functional roles, granted to users). Least privilege, future grants on schemas, separate raw, staging and mart layers, masking policies on sensitive columns, row access policies for faculty or department scoping, secure views for sharing, and a service role for BI with only the access it needs.
+  trap: |-
+    Granting privileges directly to users, using ACCOUNTADMIN for routine work, or giving the Power BI service account a broad role.
+
+- id: sec-fc-003
+  type: flashcard
+  language: security
+  topic: powerbi-security
+  level: mid
+  tags: [core]
+  verified: false
+  front: |-
+    How do you secure student data in a Power BI semantic model?
+  back: |-
+    Dynamic RLS using a security table and USERPRINCIPALNAME() to scope by faculty or department. Object-level security to hide sensitive columns or tables from some roles. Sensitivity labels, workspace and app permissions, and sharing viewers rather than editors. Disclosure control for small counts built into measures. Test with real viewer accounts.
+  trap: |-
+    Relying on hidden pages or report-level filters. Anything in the model can be queried by someone with build access.
+
+- id: dbt-fc-001
+  type: flashcard
+  language: sql
+  topic: dbt
+  level: mid
+  tags: [core]
+  verified: false
+  front: |-
+    How do you structure and test a dbt project built on Banner data?
+  back: |-
+    Staging models rename, type and filter each source table (for example current SPRIDEN rows only). Intermediate models hold joins and effective-dating logic. Marts expose facts and dimensions at a declared grain. Tests: unique and not_null on keys, relationships between facts and dimensions, accepted_values on codes, source freshness, and custom tests such as one current identity row per PIDM. Use snapshots for tables updated in place.
+  trap: |-
+    Business logic buried in staging, no declared grain, and tests only on primary keys.
+
+# ---------------------------------------------------------------- MULTIPLE CHOICE
+
+- id: bn-mcq-001
+  type: mcq
+  language: banner
+  topic: identity
+  level: mid
+  tags: [trap, core]
+  verified: false
+  prompt: |-
+    Which condition returns the current identification row for a person in SPRIDEN?
+  options:
+    - id: A
+      text: "SPRIDEN_CHANGE_IND IS NULL"
+      why: Correct. History rows carry a change indicator and the current row does not.
+    - id: B
+      text: "The row with the latest SPRIDEN_ACTIVITY_DATE"
+      why: Activity dates can change on historical rows, so this is unreliable.
+    - id: C
+      text: "SPRIDEN_ENTITY_IND = 'P'"
+      why: This separates persons from non-person entities. It does not distinguish current from historical rows.
+    - id: D
+      text: "The highest surrogate ID value"
+      why: A sequence value reflects insertion order, not which row is current.
+  answer: A
+
+- id: bn-mcq-002
+  type: mcq
+  language: banner
+  topic: identity
+  level: junior
+  tags: [core]
+  verified: false
+  prompt: |-
+    You are joining SPRIDEN, SFRSTCR and SGBSTDN. Which column should you join on?
+  options:
+    - id: A
+      text: "PIDM"
+      why: Correct. It is the stable internal person key present in each table.
+    - id: B
+      text: "The visible student ID"
+      why: It can change over time and repeats across SPRIDEN history rows.
+    - id: C
+      text: "Surname and date of birth"
+      why: Not unique and not present in every table.
+    - id: D
+      text: "Term code"
+      why: Term identifies a period, not a person.
+  answer: A
+
+- id: bn-mcq-003
+  type: mcq
+  language: sql
+  topic: effective-dating
+  level: senior
+  tags: [trap, most-asked]
+  verified: false
+  prompt: |-
+    You need each student's SGBSTDN row as it applied in term 202410. Which approach is right?
+  options:
+    - id: A
+      text: "Join on term_code_eff = '202410'"
+      why: Drops students who had no row created in that exact term, even though an earlier row still applies.
+    - id: B
+      text: "Filter term_code_eff <= '202410', then QUALIFY ROW_NUMBER() OVER (PARTITION BY pidm ORDER BY term_code_eff DESC) = 1"
+      why: Correct. It picks the latest row that is effective on or before the term for each student.
+    - id: C
+      text: "Take MAX(term_code_eff) per student with no term filter"
+      why: Returns the latest row overall, which may be future-dated relative to the term.
+    - id: D
+      text: "Take the row with the latest activity date"
+      why: Activity date records when a row was touched, not which term it applies to.
+  answer: B
+
+- id: bn-mcq-004
+  type: mcq
+  language: m
+  topic: privacy-levels
+  level: mid
+  tags: [trap]
+  verified: false
+  prompt: |-
+    A refresh fails with "Formula.Firewall: Query references other queries or steps, so it may not directly access a data source". What is the underlying cause?
+  options:
+    - id: A
+      text: "Wrong credentials for the data source"
+      why: Credential failures produce different errors.
+    - id: B
+      text: "A step both references another query and accesses a data source, which the firewall blocks to prevent data leaking between sources"
+      why: Correct. Fix by separating source queries from the query that combines them, or by aligning privacy levels deliberately.
+    - id: C
+      text: "The gateway is offline"
+      why: This gives a connectivity error, not a firewall error.
+    - id: D
+      text: "The result has too many rows"
+      why: Row count does not trigger this error.
+  answer: B
+
+- id: he-mcq-001
+  type: mcq
+  language: dax
+  topic: non-additive-measures
+  level: mid
+  tags: [core, trap]
+  verified: false
+  prompt: |-
+    The fact table has one row per student per programme registration. Which measure gives a correct student headcount at every level including the total?
+  options:
+    - id: A
+      text: "COUNTROWS(Registration)"
+      why: Counts registrations, so a student on two programmes is counted twice in the total.
+    - id: B
+      text: "DISTINCTCOUNT(Registration[StudentID])"
+      why: Correct. It counts each student once in whatever filter context applies.
+    - id: C
+      text: "SUM(Registration[HeadcountFlag]) where the flag is 1 on each row"
+      why: Same problem as COUNTROWS. A flag at registration grain double counts.
+    - id: D
+      text: "COUNT(Registration[ProgrammeCode])"
+      why: Counts non-blank programme codes, which is registrations again.
+  answer: B
+
+- id: he-mcq-002
+  type: mcq
+  language: he-data
+  topic: governance
+  level: senior
+  tags: [trap]
+  verified: false
+  prompt: |-
+    A dashboard shows disability counts by course, and some cells are 1 or 2. What is the most robust control?
+  options:
+    - id: A
+      text: "Hide small values with conditional formatting"
+      why: The values are still in the model and visible in tooltips, exports and queries.
+    - id: B
+      text: "Apply the agreed suppression or rounding rule inside the measure, and review totals for secondary disclosure"
+      why: Correct. The control is in the semantic layer so report authors cannot bypass it.
+    - id: C
+      text: "Rely on RLS"
+      why: RLS restricts which rows a user sees, not whether small counts are disclosed.
+    - id: D
+      text: "Add a note asking users not to share the report"
+      why: A policy reminder is not a technical control.
+  answer: B
+
+- id: bn-mcq-005
+  type: mcq
+  language: he-data
+  topic: snapshots
+  level: mid
+  tags: [core]
+  verified: false
+  prompt: |-
+    Your January enrolment count differs from the figure in the official return for the same date. Most likely cause?
+  options:
+    - id: A
+      text: "A DAX syntax issue"
+      why: Syntax problems give errors, not plausible but different numbers.
+    - id: B
+      text: "Your report reads live data, while the return used a frozen snapshot taken at the census date"
+      why: Correct. Late changes and corrections to live records move the number. Report official figures from snapshots.
+    - id: C
+      text: "Power BI visual caching"
+      why: Caching affects freshness of a refresh, not a structural difference of this kind.
+    - id: D
+      text: "Banner stores times in a different timezone"
+      why: Timezones rarely explain a count difference like this.
+  answer: B
+
+- id: sec-mcq-002
+  type: mcq
+  language: security
+  topic: snowflake-rbac
+  level: senior
+  tags: [core]
+  verified: false
+  prompt: |-
+    Analysts need the student table, but only a small group may see date of birth and ethnicity. Best approach in Snowflake?
+  options:
+    - id: A
+      text: "Keep separate copies of the table for each audience"
+      why: Duplicates data, drifts out of sync, and multiplies the governance burden.
+    - id: B
+      text: "Apply a masking policy on the sensitive columns that checks the querying role"
+      why: Correct. One table, one definition, access controlled by role at query time.
+    - id: C
+      text: "Hide the columns in Power BI"
+      why: Hiding in the report layer does not protect the warehouse and is bypassable.
+    - id: D
+      text: "Give all analysts a high-privilege role"
+      why: Violates least privilege.
+  answer: B
+
+- id: dbt-mcq-001
+  type: mcq
+  language: sql
+  topic: dbt
+  level: mid
+  tags: [core]
+  verified: false
+  prompt: |-
+    A source table is updated in place, so old values are lost, and you need history of changes. Which dbt feature fits?
+  options:
+    - id: A
+      text: "An incremental model that appends new rows"
+      why: Appends new keys but does not capture changes to existing rows reliably.
+    - id: B
+      text: "A snapshot (type 2 slowly changing dimension)"
+      why: Correct. A snapshot records changed rows with validity dates, using a timestamp or check strategy.
+    - id: C
+      text: "A view"
+      why: A view reflects the current state only.
+    - id: D
+      text: "A seed"
+      why: Seeds are static CSV files in the repository.
+  answer: B
+
+- id: ms-mcq-001
+  type: mcq
+  language: modelling
+  topic: identity-reconciliation
+  level: senior
+  tags: [core]
+  verified: false
+  prompt: |-
+    You must link student records from Banner to another system. Which matching rule do you apply first?
+  options:
+    - id: A
+      text: "Fuzzy match on name"
+      why: Highest false-positive risk. Use only as a flagged last resort.
+    - id: B
+      text: "Exact match on a shared unique identifier after normalisation"
+      why: Correct. Deterministic, explainable and auditable. Lower tiers handle what it misses.
+    - id: C
+      text: "Date of birth alone"
+      why: Many students share a birth date.
+    - id: D
+      text: "Postcode and surname"
+      why: Households and shared accommodation produce collisions.
+  answer: B
+
+- id: ms-mcq-002
+  type: mcq
+  language: dax
+  topic: composite-models
+  level: senior
+  tags: [trap]
+  verified: false
+  prompt: |-
+    In a composite model, an Import dimension is related to a DirectQuery fact table from a different source. What is true of that relationship?
+  options:
+    - id: A
+      text: "It is a limited relationship, and RELATED cannot be used across it"
+      why: Correct. Cross source group relationships are limited, with weaker guarantees about uniqueness and blank rows.
+    - id: B
+      text: "It behaves exactly like a normal one-to-many relationship"
+      why: Limited relationships differ in important ways.
+    - id: C
+      text: "It cannot be created"
+      why: It can, which is the point of composite models.
+    - id: D
+      text: "It forces the Import table to DirectQuery"
+      why: Storage modes are set per table.
+  answer: A
+
+- id: bn-mcq-006
+  type: mcq
+  language: modelling
+  topic: dates
+  level: mid
+  tags: [core]
+  verified: false
+  prompt: |-
+    How should you derive academic year, term type and term dates from a Banner term code?
+  options:
+    - id: A
+      text: "String maths on the term code in every report"
+      why: Term code conventions are institution-specific, so repeated string maths gives inconsistent and often wrong results.
+    - id: B
+      text: "A governed term dimension that maps each term code to academic year, term type and start and end dates"
+      why: Correct. Built once from STVTERM plus your institution's rules, tested, and reused everywhere.
+    - id: C
+      text: "Use the calendar year of the activity date"
+      why: Terms and academic years do not align with calendar years.
+    - id: D
+      text: "Ask users to select the academic year manually"
+      why: Does not solve the derivation.
+  answer: B
+
+# ---------------------------------------------------------------- PREDICT THE OUTPUT
+
+- id: he-pred-001
+  type: predict
+  language: dax
+  topic: non-additive-measures
+  level: mid
+  tags: [core, trap]
+  verified: false
+  prompt: |-
+    What does a table visual with Programme on rows show for both measures, including the Total row?
+  data:
+    Registration:
+      columns: [StudentID, Programme]
+      rows:
+        - [S1, ProgA]
+        - [S1, ProgB]
+        - [S2, ProgA]
+  code: |-
+    Headcount = DISTINCTCOUNT(Registration[StudentID])
+    Registrations = COUNTROWS(Registration)
+  output:
+    columns: [Programme, Headcount, Registrations]
+    rows:
+      - [ProgA, 2, 2]
+      - [ProgB, 1, 1]
+      - [Total, 2, 3]
+  explanation: |-
+    The programme rows add to 3 students but the Total row shows 2, because S1 is counted once. Registrations is a row count, so it does add to 3. Headcount is non-additive across programmes.
+
+- id: he-pred-002
+  type: predict
+  language: dax
+  topic: snapshots
+  level: senior
+  tags: [trap]
+  verified: false
+  prompt: |-
+    Month-end headcount snapshots are stored on the last calendar day of each month and the Date table is complete. What do the two measures return?
+  data:
+    Snapshot:
+      columns: [Date, Headcount]
+      rows:
+        - ["31 Jan", 100]
+        - ["28 Feb", 110]
+        - ["31 Mar", 105]
+  code: |-
+    Summed = SUM(Snapshot[Headcount])
+    Closing = CALCULATE(SUM(Snapshot[Headcount]), LASTDATE('Date'[Date]))
+  output:
+    columns: [Period, Summed, Closing]
+    rows:
+      - [Jan, 100, 100]
+      - [Feb, 110, 110]
+      - [Mar, 105, 105]
+      - [Q1, 315, 105]
+  explanation: |-
+    Headcount at a point in time is semi-additive: it sums across students but not across time. At quarter level Summed gives 315, which is meaningless. LASTDATE picks the last date in context (31 Mar), so Closing returns that day's snapshot, 105. If the last day can lack data, use LASTNONBLANK instead.
+
+- id: he-pred-003
+  type: predict
+  language: dax
+  topic: retention
+  level: senior
+  tags: [trap, most-asked]
+  verified: false
+  prompt: |-
+    What do the three measures return?
+  data:
+    Enrolment:
+      columns: [StudentID, Term]
+      rows:
+        - [S1, "202410"]
+        - [S2, "202410"]
+        - [S3, "202410"]
+        - [S1, "202510"]
+        - [S3, "202510"]
+        - [S4, "202510"]
+  code: |-
+    Cohort =
+    CALCULATE ( DISTINCTCOUNT ( Enrolment[StudentID] ), Enrolment[Term] = "202410" )
+
+    Retained =
+    VAR _Base =
+        CALCULATETABLE ( VALUES ( Enrolment[StudentID] ), Enrolment[Term] = "202410" )
+    RETURN
+        CALCULATE (
+            DISTINCTCOUNT ( Enrolment[StudentID] ),
+            Enrolment[Term] = "202510",
+            TREATAS ( _Base, Enrolment[StudentID] )
+        )
+
+    Retention % = DIVIDE ( [Retained], [Cohort] )
+  output:
+    columns: [Cohort, Retained, "Retention %"]
+    rows:
+      - [3, 2, "66.7%"]
+  explanation: |-
+    The 202410 cohort is S1, S2 and S3. In 202510, S1 and S3 are still enrolled, so Retained is 2 and retention is 2/3. S4 is a new student in 202510 and is excluded because TREATAS restricts the follow-up count to cohort members.
+
+# ---------------------------------------------------------------- SPOT THE BUG
+
+- id: bn-bug-001
+  type: bug
+  language: sql
+  topic: identity
+  level: mid
+  tags: [trap, core]
+  verified: false
+  symptom: |-
+    After joining names onto the enrolment table, the student count is 3% higher than before the join.
+  code: |-
+    select e.pidm, e.term_code, i.spriden_first_name, i.spriden_last_name
+    from enrolment e
+    join spriden i on i.spriden_pidm = e.pidm
+  diagnosis: |-
+    SPRIDEN keeps name and ID history, so a person with changes has several rows. The join returns one row per history row.
+  fix: |-
+    Add and i.spriden_change_ind is null (and entity indicator 'P' if needed), or build a staging model with one current row per PIDM and add a dbt unique test on pidm.
+
+- id: ms-bug-001
+  type: bug
+  language: m
+  topic: merges
+  level: mid
+  tags: [trap, most-asked]
+  verified: false
+  symptom: |-
+    Merging Banner students with a CRM export on StudentID returns no matches, though the IDs look identical in both tables.
+  code: |-
+    Merged = Table.NestedJoin(Banner, {"StudentID"}, Crm, {"StudentID"}, "Crm", JoinKind.LeftOuter)
+  diagnosis: |-
+    Data types or formatting differ. One source holds the ID as text with leading zeros (for example 00123456), the other as a number (123456), or one has trailing spaces. M comparisons are exact and type-sensitive.
+  fix: |-
+    Standardise the key in both queries before merging, for example Text.PadStart(Text.Trim(Text.From([StudentID])), 8, "0"), and set the column type to text in both. Then verify the match rate.
+
+- id: bn-bug-002
+  type: bug
+  language: sql
+  topic: dates
+  level: mid
+  tags: [trap]
+  verified: false
+  symptom: |-
+    Spring and summer terms are reported in the wrong academic year in the retention report.
+  code: |-
+    select left(term_code, 4) as academic_year from sfrstcr
+  diagnosis: |-
+    This assumes the first four characters of the term code give the academic year. If term codes embed the calendar year, spring and summer terms belong to the academic year that began the previous autumn.
+  fix: |-
+    Build a term dimension that maps each term code to academic year, term type and dates, test it with accepted_values and relationships tests, and join to it instead of deriving values from strings.
+
+- id: ms-bug-002
+  type: bug
+  language: m
+  topic: combining-files
+  level: mid
+  tags: [core]
+  verified: false
+  symptom: |-
+    Combining monthly faculty workbooks from a folder gives a column that is null for one month, plus an extra column with data for that month only.
+  code: |-
+    Combined = Table.Combine(Parsed[Data])
+  diagnosis: |-
+    Table.Combine matches columns by name. One workbook has a slightly different header (for example "Student ID" instead of "StudentID"), so its values land in a separate column.
+  fix: |-
+    Standardise headers per file before combining, using Table.RenameColumns with MissingField.Ignore driven by a mapping table, and add a schema check that fails loudly when an unknown header appears.
+
+- id: he-bug-001
+  type: bug
+  language: dax
+  topic: non-additive-measures
+  level: mid
+  tags: [trap]
+  verified: false
+  symptom: |-
+    Headcount by programme is correct, but the Total row is larger than the true number of students.
+  code: |-
+    Headcount =
+    SUMX (
+        VALUES ( Programme[Code] ),
+        CALCULATE ( DISTINCTCOUNT ( Registration[StudentID] ) )
+    )
+  diagnosis: |-
+    The measure adds up per-programme distinct counts. Students on more than one programme are counted once per programme in the total.
+  fix: |-
+    Use DISTINCTCOUNT(Registration[StudentID]) directly, so the total is a distinct count over all students in context.
+
+# ---------------------------------------------------------------- EXPLAIN ALOUD
+
+- id: bn-exp-001
+  type: explain
+  language: he-data
+  topic: end-to-end
+  level: senior
+  tags: [confidence, most-asked]
+  verified: false
+  prompt: |-
+    Walk me through building a student retention report from Banner plus a separate widening participation dataset.
+  keyPoints:
+    - Agree the definition first: cohort, follow-up point, exclusions, as-at date
+    - Land Banner raw in the warehouse, model with dbt, declare the grain
+    - Current-row and effective-dating logic for identity and student records
+    - Identity reconciliation to the second dataset, with a mapping table, match tiers and an exceptions list
+    - Snapshots so figures are reproducible
+    - Disclosure control for small counts and special category fields
+    - Reconcile totals back to the source system and to previously published figures
+    - Power BI model: star schema, DISTINCTCOUNT measures, RLS by faculty
+
+- id: ms-exp-001
+  type: explain
+  language: modelling
+  topic: conflicting-sources
+  level: senior
+  tags: [confidence]
+  verified: false
+  prompt: |-
+    Banner and another system disagree about a student's status. How do you handle it?
+  keyPoints:
+    - Establish the system of record for each attribute and document it
+    - Confirm the records genuinely match before comparing
+    - Understand timing: refresh lag, as-at dates, and late updates
+    - Log differences in an exceptions or reconciliation table with counts over time
+    - Route fixes to the data owner, correcting at source rather than patching downstream
+    - Do not silently override one system in the model
+
+- id: sec-exp-001
+  type: explain
+  language: security
+  topic: governance
+  level: senior
+  tags: [confidence]
+  verified: false
+  prompt: |-
+    Explain your access design for student data to a data protection officer.
+  keyPoints:
+    - Least privilege and roles by function, not by person
+    - Special category fields masked by default and unlocked by role
+    - Faculty or department scoping through row access or RLS
+    - Disclosure control for small numbers
+    - Joiners, movers and leavers process, and periodic access review
+    - Audit and logging, retention, and a DPIA for new uses
+
+# ---------------------------------------------------------------- PATTERN LIBRARY
+
+- id: bn-pat-001
+  type: pattern
+  language: sql
+  topic: identity
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: Current person row from SPRIDEN
+  scenario: |-
+    Staging model with one current identity row per person.
+  code: |-
+    select
+        spriden_pidm       as pidm,
+        spriden_id         as student_id,
+        spriden_first_name as first_name,
+        spriden_last_name  as last_name
+    from {{ source('banner', 'spriden') }}
+    where spriden_change_ind is null
+      and spriden_entity_ind = 'P'
+  notes: |-
+    Add a dbt unique and not_null test on pidm. If the test fails, you have duplicate current rows in the source, which is itself a finding to report.
+
+- id: bn-pat-002
+  type: pattern
+  language: sql
+  topic: effective-dating
+  level: senior
+  tags: [interview-staple]
+  verified: false
+  name: Student record as at a term
+  scenario: |-
+    The effective-dated student row that applied in a given term.
+  code: |-
+    select *
+    from {{ ref('stg_sgbstdn') }}
+    where term_code_eff <= '202410'
+    qualify row_number() over (
+        partition by pidm
+        order by term_code_eff desc
+    ) = 1
+  notes: |-
+    String comparison works because term codes sort lexicographically in YYYYMM style. Check this holds for your codes. Parameterise the term in the model or a macro.
+
+- id: ms-pat-001
+  type: pattern
+  language: sql
+  topic: identity-reconciliation
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: Unmatched records in either source
+  scenario: |-
+    Reconciliation report listing students that exist in only one of two systems.
+  code: |-
+    select
+        coalesce(b.student_id_norm, o.student_id_norm) as student_id_norm,
+        case
+            when o.student_id_norm is null then 'Banner only'
+            when b.student_id_norm is null then 'Other system only'
+        end as status
+    from banner_students b
+    full outer join other_students o
+        on b.student_id_norm = o.student_id_norm
+    where b.student_id_norm is null
+       or o.student_id_norm is null
+  notes: |-
+    Pair this with a count summary (rows and distinct keys per source, matched, unmatched) so you can show the reconciliation moving over time.
+
+- id: he-pat-001
+  type: pattern
+  language: dax
+  topic: non-additive-measures
+  level: junior
+  tags: [interview-staple]
+  verified: false
+  name: Student headcount
+  scenario: |-
+    Count each student once in any context.
+  code: |-
+    Headcount = DISTINCTCOUNT ( Registration[StudentID] )
+  notes: |-
+    If a Student dimension has one row per student and the relationship is single direction, COUNTROWS(Student) is an alternative that respects filters from the fact via the relationship only when a filter is applied to the fact side. Know which applies in your model.
+
+- id: he-pat-002
+  type: pattern
+  language: dax
+  topic: retention
+  level: senior
+  tags: [interview-staple]
+  verified: false
+  name: Cohort retention
+  scenario: |-
+    Share of a base-term cohort still enrolled in a follow-up term.
+  code: |-
+    Cohort =
+    CALCULATE ( DISTINCTCOUNT ( Enrolment[StudentID] ), Enrolment[Term] = "202410" )
+
+    Retained =
+    VAR _Base =
+        CALCULATETABLE ( VALUES ( Enrolment[StudentID] ), Enrolment[Term] = "202410" )
+    RETURN
+        CALCULATE (
+            DISTINCTCOUNT ( Enrolment[StudentID] ),
+            Enrolment[Term] = "202510",
+            TREATAS ( _Base, Enrolment[StudentID] )
+        )
+
+    Retention % = DIVIDE ( [Retained], [Cohort] )
+  notes: |-
+    Terms are hard-coded for clarity. A real version takes the base and follow-up terms from disconnected parameter tables. It also needs the exclusions and cohort filters agreed in the definition.
+
+- id: he-pat-003
+  type: pattern
+  language: dax
+  topic: snapshots
+  level: senior
+  tags: [interview-staple]
+  verified: false
+  name: Closing headcount for a period
+  scenario: |-
+    Point-in-time headcount that does not sum across time.
+  code: |-
+    Snapshot Rows = COUNTROWS ( Snapshot )
+
+    Closing Headcount =
+    CALCULATE (
+        SUM ( Snapshot[Headcount] ),
+        LASTNONBLANK ( 'Date'[Date], [Snapshot Rows] )
+    )
+  notes: |-
+    LASTNONBLANK handles periods whose last day has no snapshot. LASTDATE is simpler when snapshots always fall on the last day.
+
+- id: he-pat-004
+  type: pattern
+  language: dax
+  topic: governance
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: Small-number suppression and rounding
+  scenario: |-
+    Apply a disclosure-control rule inside the measure.
+  code: |-
+    Headcount Safe =
+    VAR _n = [Headcount]
+    RETURN
+        IF ( _n < 5, BLANK (), MROUND ( _n, 5 ) )
+  notes: |-
+    The threshold and rounding must follow your institution's agreed rule. Suppressing cells does not stop disclosure through totals, so check subtotals and consider complementary suppression.
+
+- id: ms-pat-002
+  type: pattern
+  language: dax
+  topic: multiple-sources
+  level: senior
+  tags: [interview-staple]
+  verified: false
+  name: Virtual relationship to a second source
+  scenario: |-
+    Count CRM contacts for the students currently in filter context without a physical relationship.
+  code: |-
+    CRM Contacts =
+    CALCULATE (
+        COUNTROWS ( Crm ),
+        TREATAS ( VALUES ( Student[StudentID] ), Crm[StudentID] )
+    )
+  notes: |-
+    Useful when two sources cannot be related directly, such as across source groups in a composite model. Both columns must share the same data type and format, so standardise keys first.
+
+- id: ms-pat-003
+  type: pattern
+  language: m
+  topic: key-standardisation
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: Standardise a join key across sources
+  scenario: |-
+    Make IDs from two systems comparable before a merge.
+  code: |-
+    Standardised = Table.TransformColumns(
+        Source,
+        {{"StudentID", each Text.PadStart(Text.Trim(Text.From(_)), 8, "0"), type text}}
+    )
+  notes: |-
+    Do this in the staging step of each source query, then merge. Check the match rate after the merge rather than assuming it worked.
+
+- id: ms-pat-004
+  type: pattern
+  language: m
+  topic: combining-files
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: Combine workbooks from a folder
+  scenario: |-
+    Append monthly Excel returns from several departments.
+  code: |-
+    let
+        Source = Folder.Files("C:\Data\Returns"),
+        Xlsx = Table.SelectRows(Source, each [Extension] = ".xlsx" and not Text.StartsWith([Name], "~$")),
+        Parsed = Table.AddColumn(
+            Xlsx,
+            "Data",
+            each Table.PromoteHeaders(Excel.Workbook([Content]){0}[Data], [PromoteAllScalars = true])
+        ),
+        Combined = Table.Combine(Parsed[Data])
+    in
+        Combined
+  notes: |-
+    Table.Combine matches by column name, so standardise headers per file first. Excel lock files (names starting ~$) must be excluded. Path and sheet index are placeholders.

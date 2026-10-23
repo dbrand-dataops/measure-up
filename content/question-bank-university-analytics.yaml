@@ -1,0 +1,1611 @@
+# University analytics question bank, DAX / M / SQL / Power BI engineering, draft v0.3
+# Same schema as v0.1 and v0.2. Companion to question-bank.yaml and question-bank-banner-he.yaml (keep all three).
+# Every scenario uses a university data environment instead of a sales model.
+# verified: false on every item. Check each against Power BI Desktop / Snowflake before relying on it.
+# Institution-specific rules (pass marks, credit totals, classification boundaries, term codes, academic year start)
+# are assumptions for illustration. Replace them with your own.
+
+meta:
+  version: "0.3"
+  model_assumption: |-
+    Star-ish semantic model.
+    Dimensions: Student (StudentKey, Domicile, EntryQualification, WPFlag, Email), Programme (ProgrammeKey, Title, Level, SchoolCode),
+      School (SchoolCode, SchoolName, Faculty), Module (ModuleKey, Title, Credits, Level, SchoolCode),
+      Term (TermCode, AcademicYearStart, TermType, TermStartDate, TermEndDate), Date (one row per day, academic year attributes).
+    Facts: Enrolment (StudentKey, ProgrammeKey, TermCode, Status, ModeOfStudy, FTE, StartDate, EndDate),
+      ModuleResult (StudentKey, ModuleKey, TermCode, AttemptNo, Mark, Credits),
+      Application (ApplicationID, ProgrammeKey, ApplicationDate, OfferDate, AcceptDate, Stage),
+      Attendance (StudentKey, SessionDate, Attended 0 or 1), ModuleRegistration (StudentKey, ModuleKey, TermCode).
+    Base measures: [Headcount] = DISTINCTCOUNT(Enrolment[StudentKey]); [Applications] = COUNTROWS(Application).
+    Assumed pass mark 40, assumed 120 credits per undergraduate year.
+
+items:
+
+# ================================================================ FLASHCARDS
+
+- id: uni-fc-001
+  type: flashcard
+  language: dax
+  topic: averages
+  level: mid
+  tags: [core, trap]
+  verified: false
+  front: |-
+    Why is AVERAGE(ModuleResult[Mark]) often the wrong average mark for a student or programme?
+  back: |-
+    It weights every result equally, so a 10-credit module counts the same as a 40-credit one. A credit-weighted mean is SUM(mark x credits) / SUM(credits), where the credits in the denominator are only those on rows that actually have a mark.
+  trap: |-
+    Including credits for unmarked rows in the denominator drags the average down. Also confirm local rules: whether resit marks are capped, and whether the final mark uses best or latest attempt.
+
+- id: uni-fc-002
+  type: flashcard
+  language: dax
+  topic: modelling
+  level: senior
+  tags: [trap, most-asked]
+  verified: false
+  front: |-
+    Students take many modules and modules have many students. How do you model it for Power BI?
+  back: |-
+    Use ModuleRegistration (or ModuleResult) as the fact at student-module-term grain: Student 1-to-many Registration, Module 1-to-many Registration, both single direction. Filters from either dimension then reach the fact, and measures count through it. A direct many-to-many relationship or a bidirectional filter between Student and Module is the thing to avoid.
+  trap: |-
+    Bidirectional filters create ambiguous paths and slow queries. If one dimension must filter the other, prefer TREATAS or CROSSFILTER inside a specific measure.
+
+- id: uni-fc-003
+  type: flashcard
+  language: dax
+  topic: iterators
+  level: mid
+  tags: [most-asked]
+  verified: false
+  front: |-
+    How do you count students who meet a condition calculated per student (for example 120 credits passed)?
+  back: |-
+    Iterate the distinct students in context, evaluate a measure for each (context transition does the per-student filtering), keep those that pass the test, then count: COUNTROWS(FILTER(VALUES(Student[StudentKey]), [Credits Passed] >= 120)).
+  trap: |-
+    Blank compares as zero in DAX, so a student with no rows can pass a test like [Rate] < 0.7. Add NOT ISBLANK where that matters. On large student tables, a precomputed flag in the warehouse is cheaper.
+
+- id: uni-fc-004
+  type: flashcard
+  language: dax
+  topic: ranking
+  level: mid
+  tags: [trap]
+  verified: false
+  front: |-
+    RANKX over ALL(School[SchoolName]) versus ALLSELECTED(School[SchoolName]): what changes? What about TOPN?
+  back: |-
+    The table argument defines who is being ranked. ALL ranks against every school regardless of slicers. ALLSELECTED ranks only within the schools the user has selected. RANKX defaults to descending order and to Skip for ties.
+    TOPN(5, ...) returns more than 5 rows when values tie at the cut-off, unless you add a tie-breaker expression.
+  trap: |-
+    A rank measure shows odd values on the total row, so check what you want there, often BLANK via HASONEVALUE.
+
+- id: uni-fc-005
+  type: flashcard
+  language: dax
+  topic: academic-calendar
+  level: mid
+  tags: [trap, core]
+  verified: false
+  front: |-
+    How do you handle an academic year that does not match the calendar year?
+  back: |-
+    Put academic attributes in the Date and Term tables: AcademicYearStart, a label such as 2025/26, term type, and term start and end dates, sorted with sort-by-column. Calendar year-to-date logic then becomes explicit filters on those attributes.
+    DATESYTD can take a year-end date string (for example for a 31 July year end), but how that string is read is locale-sensitive, so filtering on a modelled academic year column is the safer route.
+  trap: |-
+    Using YEAR([Date]) for reporting by academic year splits every year in two.
+
+- id: uni-fc-006
+  type: flashcard
+  language: dax
+  topic: single-selection
+  level: junior
+  tags: [core]
+  verified: false
+  front: |-
+    What are SELECTEDVALUE and HASONEVALUE used for, and what is the subtle behaviour?
+  back: |-
+    SELECTEDVALUE(column, alternate) returns the value when exactly one value is visible and the alternate result (blank by default) otherwise. HASONEVALUE tests for exactly one value. Typical uses: dynamic titles, parameters read from a slicer, and measures that only make sense for one programme or term.
+  trap: |-
+    They respond to filters arriving through relationships as well as direct selections, so a filter on a related table that leaves one row can make the test succeed.
+
+- id: uni-fc-007
+  type: flashcard
+  language: dax
+  topic: blanks
+  level: mid
+  tags: [trap, core]
+  verified: false
+  front: |-
+    Why does the BLANK versus zero distinction matter for rates such as attendance?
+  back: |-
+    Blank means no data (no sessions timetabled), zero means data exists and the answer is zero. DIVIDE returns blank when the denominator is zero or blank, which is usually the honest result. Visuals drop blank rows by default, so the choice changes which students appear, and comparisons treat blank as zero.
+  trap: |-
+    DIVIDE(a, b, 0) hides the difference and makes students with no sessions look like non-attenders.
+
+- id: uni-fc-008
+  type: flashcard
+  language: dax
+  topic: dynamic-measures
+  level: senior
+  tags: [core]
+  verified: false
+  front: |-
+    Field parameters or calculation groups: when do you use which?
+  back: |-
+    Field parameters let a report user switch which measures or columns a visual shows (Headcount, FTE or Registrations; School, Level or Mode on an axis). Calculation groups modify any measure through calculation items using SELECTEDMEASURE, for example Current, Prior Academic Year, and Year-on-Year %, so you write the time logic once.
+  trap: |-
+    Calculation groups require implicit measures to be disabled, and format strings and precedence need care. Calculation group authoring is easiest in Tabular Editor.
+
+- id: uni-fc-009
+  type: flashcard
+  language: dax
+  topic: distributions
+  level: mid
+  tags: [core]
+  verified: false
+  front: |-
+    How do you analyse a distribution of marks in DAX?
+  back: |-
+    MEDIAN and PERCENTILE.INC for robust summaries, STDEV.S or STDEV.P for spread (sample versus population), and a disconnected bands table (Lower, Upper, label) with a measure that counts marks within the selected band for a histogram.
+  trap: |-
+    A mean alone hides the shape. Small cohorts make percentiles unstable, so show the n alongside.
+
+- id: uni-fc-010
+  type: flashcard
+  language: modelling
+  topic: dimension-integrity
+  level: mid
+  tags: [trap]
+  verified: false
+  front: |-
+    Enrolment rows have school codes that are not in the School dimension. What happens and what do you do?
+  back: |-
+    Power BI groups those rows under a (Blank) member, which hides the integrity problem in plain sight. Fix upstream: add an Unknown member to each dimension, map unmatched keys to it, and add tests (relationships tests in dbt, and an orphan count surfaced in the report or monitoring).
+  trap: |-
+    Blank members make totals look right while category breakdowns quietly lose rows.
+
+- id: uni-fc-011
+  type: flashcard
+  language: modelling
+  topic: model-hygiene
+  level: mid
+  tags: [core]
+  verified: false
+  front: |-
+    What does a well-kept semantic model look like?
+  back: |-
+    A dedicated measures table or tidy home tables, display folders, consistent naming, descriptions, format strings, hidden keys and technical columns, sort-by-column for month and term labels, a marked date table, auto date/time disabled, and no implicit measures where calculation groups are used.
+  trap: |-
+    In interviews, mention that someone else must be able to maintain it. Documentation and naming are part of quality.
+
+- id: uni-fc-012
+  type: flashcard
+  language: modelling
+  topic: storage-mode
+  level: senior
+  tags: [most-asked]
+  verified: false
+  front: |-
+    Admissions want application numbers updated every few minutes during Clearing. How do you choose the storage mode?
+  back: |-
+    Import is fastest but only as fresh as the last refresh, and scheduled refresh counts are limited by licence or capacity. DirectQuery gives fresh data but depends on source performance, adds source load, and limits some DAX and modelling features. Hybrid tables (incremental refresh with a real-time partition, on supported capacities) and aggregations are the middle ground. Often the best answer is a narrow, pre-aggregated source view with DirectQuery for the live slice and Import for dimensions (Dual or composite).
+  trap: |-
+    Also ask what freshness is truly needed and whether the source can handle the query load. Check current licence limits.
+
+- id: uni-fc-013
+  type: flashcard
+  language: dax
+  topic: performance
+  level: senior
+  tags: [core, most-asked]
+  verified: false
+  front: |-
+    A student-level report with tens of thousands of rows is slow. How do you triage it?
+  back: |-
+    Measure first. Performance Analyzer isolates the slow visual and splits DAX query time from rendering. Copy the query into DAX Studio and read server timings to separate storage engine from formula engine time. Then reduce visible rows and fields, remove high-cardinality columns, avoid heavy measures inside iterators over Student, check for bidirectional relationships, and push per-student flags and aggregates upstream.
+  trap: |-
+    Rewriting DAX on a hunch without evidence. Always compare before and after timings.
+
+- id: uni-fc-014
+  type: flashcard
+  language: modelling
+  topic: grain
+  level: senior
+  tags: [core]
+  verified: false
+  front: |-
+    Attendance is recorded per session and runs to tens of millions of rows. What do you do?
+  back: |-
+    Decide what questions need which grain. Aggregate to student-module-week or student-term in the warehouse for the model, and keep session-level detail out of Import (or behind drill-through or aggregations with DirectQuery) unless needed. Smaller grain means a smaller, faster model.
+  trap: |-
+    Keeping every row because it might be useful later. Cardinality drives model size.
+
+- id: uni-fc-015
+  type: flashcard
+  language: modelling
+  topic: governance
+  level: mid
+  tags: [core]
+  verified: false
+  front: |-
+    Why use a shared, certified semantic model instead of many report files with their own data?
+  back: |-
+    One governed definition of headcount, retention and attainment, built and tested once, used by many thin reports through live connection. Certification signals which one to trust, lineage shows what feeds what, and change control through Git and deployment pipelines applies in one place.
+  trap: |-
+    Separate PBIX copies drift, and two reports giving different student numbers is the classic university data credibility problem.
+
+- id: uni-fc-016
+  type: flashcard
+  language: modelling
+  topic: refresh-troubleshooting
+  level: mid
+  tags: [core]
+  verified: false
+  front: |-
+    A scheduled refresh has started failing. How do you diagnose it?
+  back: |-
+    Read the error in refresh history and decide which layer failed. Gateway: offline or outdated. Credentials: expired or changed. Source: timeout, permissions, schema change such as a renamed column. M: type conversion errors or firewall errors. Model: memory or size limits, duplicate keys on the one side of a relationship. Fix the cause, rerun, and add failure notifications.
+  trap: |-
+    Retrying repeatedly without reading the message.
+
+- id: uni-fc-017
+  type: flashcard
+  language: modelling
+  topic: deployment
+  level: senior
+  tags: [core]
+  verified: false
+  front: |-
+    How do you promote a semantic model from development to production safely?
+  back: |-
+    Separate Dev, Test and Prod workspaces connected by a deployment pipeline, with deployment rules that swap the data source and parameters per stage. Keep the model and report in source control through Git integration (the PBIP project format stores them as text), use pull requests for review, and have users run UAT in Test.
+  trap: |-
+    Deploying without rules leaves Prod pointing at Dev data. Feature names and formats in this area change, so check current documentation.
+
+- id: uni-fc-018
+  type: flashcard
+  language: m
+  topic: incremental-refresh
+  level: senior
+  tags: [trap, most-asked]
+  verified: false
+  front: |-
+    Which column do you use for RangeStart and RangeEnd on a Banner-derived table, and what about changed rows?
+  back: |-
+    Partition on a date that does not change for a given row, such as registration date or term start. A column like ACTIVITY_DATE changes whenever a row is edited, so the same row can end up in two partitions and duplicate. Use the detect-data-changes option with a last-modified column (such as activity date) so only partitions whose data changed are refreshed.
+  trap: |-
+    The filter on the partition date must fold, or each partition scans the whole table.
+
+- id: uni-fc-019
+  type: flashcard
+  language: m
+  topic: native-query
+  level: senior
+  tags: [trap]
+  verified: false
+  front: |-
+    You run a hand-written SQL query as the source of a query. What happens to folding, and is there a fix?
+  back: |-
+    A native query normally stops folding, so later steps run locally. Value.NativeQuery(Source, "select ...", null, [EnableFolding = true]) can let later steps fold on connectors that support it.
+  trap: |-
+    A better pattern is a view in the warehouse, so the logic is versioned and testable. Check connector support for EnableFolding.
+
+- id: uni-fc-020
+  type: flashcard
+  language: m
+  topic: fuzzy-matching
+  level: mid
+  tags: [trap]
+  verified: false
+  front: |-
+    When is fuzzy matching in Power Query acceptable?
+  back: |-
+    For low-risk reference lists, for example mapping free-text department names in departmental spreadsheets to a canonical School list, with a sensible similarity threshold and a transformation table for known variants. Review the matches, and prefer an explicit mapping table once variants are known.
+  trap: |-
+    Not for matching people. A false match between two students is a data protection incident, not a nuisance.
+
+- id: uni-fc-021
+  type: flashcard
+  language: sql
+  topic: snowflake
+  level: mid
+  tags: [core]
+  verified: false
+  front: |-
+    How can Snowflake Time Travel help with reconciliation?
+  back: |-
+    You can query a table as it was at an earlier point inside the retention window (AT or BEFORE with a timestamp or statement), which lets you reproduce a figure published last week, compare before and after a load, or recover from a bad update. Retention defaults to one day and can be longer on higher editions.
+  trap: |-
+    It is not a substitute for deliberate snapshots. Once the retention window passes the data is gone.
+
+- id: uni-fc-022
+  type: flashcard
+  language: sql
+  topic: history
+  level: senior
+  tags: [most-asked]
+  verified: false
+  front: |-
+    Banner updates rows in place. How do you keep history for reporting as at a date?
+  back: |-
+    Two approaches. A periodic snapshot (copy the relevant tables at each census or month end) answers "what did we count on that date" exactly. A type 2 history (dbt snapshots, valid_from and valid_to) answers "which department was this student in at the time of the event" and lets you join facts to the dimension as at the event date.
+  trap: |-
+    Do not rely on activity dates alone, since they show when a row was touched, not what it said before.
+
+# ================================================================ MULTIPLE CHOICE
+
+- id: uni-mcq-001
+  type: mcq
+  language: dax
+  topic: averages
+  level: mid
+  tags: [core]
+  verified: false
+  prompt: |-
+    You need a student's credit-weighted average mark. Which measure is closest to correct?
+  options:
+    - id: A
+      text: "AVERAGE(ModuleResult[Mark])"
+      why: Weights every result equally regardless of credits.
+    - id: B
+      text: "DIVIDE(SUMX(ModuleResult, ModuleResult[Mark] * ModuleResult[Credits]), SUM(ModuleResult[Credits]))"
+      why: Correct in principle. Refine it so the denominator only includes credits on rows that have a mark.
+    - id: C
+      text: "DIVIDE(SUM(ModuleResult[Mark]), SUM(ModuleResult[Credits]))"
+      why: Divides marks by credits, which has no meaning.
+    - id: D
+      text: "AVERAGEX(Module, Module[Credits])"
+      why: Averages credits, not marks.
+  answer: B
+
+- id: uni-mcq-002
+  type: mcq
+  language: dax
+  topic: pass-rate
+  level: mid
+  tags: [trap]
+  verified: false
+  prompt: |-
+    Which measure gives the first-attempt pass rate (pass mark 40)?
+  options:
+    - id: A
+      text: "DIVIDE(CALCULATE(COUNTROWS(ModuleResult), ModuleResult[AttemptNo] = 1, ModuleResult[Mark] >= 40), CALCULATE(COUNTROWS(ModuleResult), ModuleResult[AttemptNo] = 1))"
+      why: Correct. Numerator and denominator are both restricted to first attempts.
+    - id: B
+      text: "DIVIDE(CALCULATE(COUNTROWS(ModuleResult), ModuleResult[AttemptNo] = 1, ModuleResult[Mark] >= 40), COUNTROWS(ModuleResult))"
+      why: The denominator includes resits, so the rate is understated.
+    - id: C
+      text: "DIVIDE(CALCULATE(COUNTROWS(ModuleResult), ModuleResult[Mark] >= 40), COUNTROWS(ModuleResult))"
+      why: Mixes first attempts and resits in both parts.
+    - id: D
+      text: "AVERAGE(ModuleResult[Mark]) >= 40"
+      why: Returns a Boolean about the average mark, not a rate.
+  answer: A
+
+- id: uni-mcq-003
+  type: mcq
+  language: dax
+  topic: role-playing-dates
+  level: mid
+  tags: [core]
+  verified: false
+  prompt: |-
+    The Application table has ApplicationDate (active relationship to Date), OfferDate and AcceptDate (inactive). How do you count offers by offer month?
+  options:
+    - id: A
+      text: "CALCULATE(COUNT(Application[OfferDate]), USERELATIONSHIP(Application[OfferDate], 'Date'[Date]))"
+      why: Correct. The inactive relationship is activated inside CALCULATE, and COUNT skips applications with no offer.
+    - id: B
+      text: "COUNTROWS(Application)"
+      why: Uses the active relationship, so it counts by application month.
+    - id: C
+      text: "CALCULATE(COUNTROWS(Application), Application[Stage] = \"Offer\")"
+      why: Still reports by application month because the active relationship decides the date.
+    - id: D
+      text: "Create a bidirectional relationship on OfferDate"
+      why: Direction is not the issue, and only one relationship between two tables can be active.
+  answer: A
+
+- id: uni-mcq-004
+  type: mcq
+  language: security
+  topic: rls
+  level: senior
+  tags: [core, most-asked]
+  verified: false
+  prompt: |-
+    Each head of school should see only their school, and some staff cover several schools. Which RLS design works best?
+  options:
+    - id: A
+      text: "One role per school, with each user added to the right role in the service"
+      why: Works, but it is a lot of administration and drifts as staff change.
+    - id: B
+      text: "One role on the School table with a filter that checks a security table (email to school code) using USERPRINCIPALNAME()"
+      why: Correct. Dynamic RLS driven by data that the school or governance team can maintain.
+    - id: C
+      text: "A separate report for every school"
+      why: Multiplies maintenance and definitions.
+    - id: D
+      text: "Hide the other schools on a slicer"
+      why: A slicer is not security.
+  answer: B
+
+- id: uni-mcq-005
+  type: mcq
+  language: dax
+  topic: iterators
+  level: senior
+  tags: [trap]
+  verified: false
+  prompt: |-
+    You need the average of each student's own average mark. Which measure does that?
+  options:
+    - id: A
+      text: "AVERAGE(ModuleResult[Mark])"
+      why: The average over all marks, which weights students with more modules more heavily.
+    - id: B
+      text: "AVERAGEX(Student, AVERAGE(ModuleResult[Mark]))"
+      why: No context transition, so each student returns the same overall average.
+    - id: C
+      text: "AVERAGEX(VALUES(Student[StudentKey]), CALCULATE(AVERAGE(ModuleResult[Mark])))"
+      why: Correct. CALCULATE turns each student into a filter, so the inner average is per student.
+    - id: D
+      text: "AVERAGEX(ModuleResult, ModuleResult[Mark])"
+      why: Equivalent to AVERAGE over all marks.
+  answer: C
+
+- id: uni-mcq-006
+  type: mcq
+  language: dax
+  topic: percent-of-total
+  level: mid
+  tags: [core]
+  verified: false
+  prompt: |-
+    A visual shows student headcount by school, and the user has selected two schools in a slicer. Which denominator gives each school's share of the selected schools?
+  options:
+    - id: A
+      text: "CALCULATE([Headcount], ALL(School))"
+      why: Includes every school, ignoring the slicer.
+    - id: B
+      text: "CALCULATE([Headcount], ALLSELECTED(School))"
+      why: Correct. It removes the visual's own row filter but keeps the slicer selection.
+    - id: C
+      text: "CALCULATE([Headcount], KEEPFILTERS(School[SchoolName]))"
+      why: Keeps the row filter, so every row returns its own count.
+    - id: D
+      text: "[Headcount]"
+      why: Gives share of itself, always 100 percent.
+  answer: B
+
+- id: uni-mcq-007
+  type: mcq
+  language: m
+  topic: merges
+  level: mid
+  tags: [core]
+  verified: false
+  prompt: |-
+    You want students in the Banner extract that have no matching row in the Enrolment query. Which join kind in Table.NestedJoin?
+  options:
+    - id: A
+      text: "JoinKind.Inner"
+      why: Returns only students with enrolments.
+    - id: B
+      text: "JoinKind.LeftAnti"
+      why: Correct. Returns left rows with no match on the right.
+    - id: C
+      text: "JoinKind.LeftOuter"
+      why: Returns all left rows, so you would still need a filter on the null matches.
+    - id: D
+      text: "JoinKind.FullOuter"
+      why: Returns unmatched rows from both sides.
+  answer: B
+
+- id: uni-mcq-008
+  type: mcq
+  language: m
+  topic: unpivot
+  level: mid
+  tags: [core]
+  verified: false
+  prompt: |-
+    A departmental return has columns StudentID, ModuleCode, Coursework, Exam, Practical. You want one row per component. The department sometimes adds a new component column. What is the most robust step?
+  options:
+    - id: A
+      text: "Select StudentID and ModuleCode, then Unpivot Other Columns"
+      why: Correct. New component columns are picked up automatically.
+    - id: B
+      text: "Select the three component columns and Unpivot Columns"
+      why: Hard-codes the column names, so a new component is silently missed.
+    - id: C
+      text: "Transpose the table"
+      why: Swaps rows and columns, not what is needed.
+    - id: D
+      text: "Pivot Column"
+      why: Pivot goes the other way, from rows to columns.
+  answer: A
+
+- id: uni-mcq-009
+  type: mcq
+  language: sql
+  topic: nulls
+  level: mid
+  tags: [trap, most-asked]
+  verified: false
+  prompt: |-
+    You want students with no enrolment. This query returns no rows, though you know such students exist. Why?
+    select student_key from student where student_key not in (select student_key from enrolment)
+  options:
+    - id: A
+      text: "enrolment.student_key contains NULLs, so NOT IN evaluates to unknown for every row"
+      why: Correct. Use NOT EXISTS or a LEFT JOIN with IS NULL instead.
+    - id: B
+      text: "NOT IN is not supported in Snowflake"
+      why: It is supported.
+    - id: C
+      text: "student_key must be a string"
+      why: Data type is not the issue here.
+    - id: D
+      text: "A DISTINCT is required inside the subquery"
+      why: Duplicates do not change the result.
+  answer: A
+
+- id: uni-mcq-010
+  type: mcq
+  language: sql
+  topic: aggregation
+  level: junior
+  tags: [core]
+  verified: false
+  prompt: |-
+    How do you list students with more than three failed attempts (mark below 40)?
+  options:
+    - id: A
+      text: "WHERE mark < 40 GROUP BY student_key HAVING COUNT(*) > 3"
+      why: Correct. WHERE filters rows before grouping and HAVING filters the groups.
+    - id: B
+      text: "WHERE mark < 40 AND COUNT(*) > 3 GROUP BY student_key"
+      why: Aggregates cannot be used in WHERE.
+    - id: C
+      text: "GROUP BY student_key HAVING mark < 40"
+      why: mark is not grouped or aggregated at that point.
+    - id: D
+      text: "SELECT DISTINCT student_key WHERE mark < 40"
+      why: Does not count failures.
+  answer: A
+
+- id: uni-mcq-011
+  type: mcq
+  language: sql
+  topic: as-at-join
+  level: senior
+  tags: [trap, most-asked]
+  verified: false
+  prompt: |-
+    A student dimension keeps history with valid_from and valid_to (valid_to is null for the current row). How do you attach the department that applied at the time of each result?
+  options:
+    - id: A
+      text: "on r.student_key = d.student_key and r.result_date >= d.valid_from and r.result_date < coalesce(d.valid_to, '9999-12-31')"
+      why: Correct. A half-open interval avoids matching two rows at a boundary, and the coalesce handles the current row.
+    - id: B
+      text: "on r.student_key = d.student_key"
+      why: Matches every historical version, so rows multiply.
+    - id: C
+      text: "on r.student_key = d.student_key and d.valid_to is null"
+      why: Gives today's department, not the one at the time.
+    - id: D
+      text: "on r.result_date = d.valid_from"
+      why: Matches only results dated exactly when a version started.
+  answer: A
+
+- id: uni-mcq-012
+  type: mcq
+  language: sql
+  topic: window-functions
+  level: mid
+  tags: [core]
+  verified: false
+  prompt: |-
+    You need each student's latest attempt per module. Which expression is correct in Snowflake?
+  options:
+    - id: A
+      text: "qualify row_number() over (partition by student_key, module_key order by attempt_no desc) = 1"
+      why: Correct. One row per student and module, the highest attempt number.
+    - id: B
+      text: "qualify row_number() over (partition by student_key order by attempt_no desc) = 1"
+      why: Returns one row per student, not per student and module.
+    - id: C
+      text: "select max(attempt_no) from module_result"
+      why: A single value for the whole table.
+    - id: D
+      text: "qualify row_number() over (partition by module_key order by mark desc) = 1"
+      why: Returns the top mark per module across all students.
+  answer: A
+
+- id: uni-mcq-013
+  type: mcq
+  language: dax
+  topic: performance
+  level: senior
+  tags: [core]
+  verified: false
+  prompt: |-
+    A matrix of 40,000 students with several measures is slow. What is the best first step?
+  options:
+    - id: A
+      text: "Request more capacity"
+      why: Spends money before knowing the cause.
+    - id: B
+      text: "Use Performance Analyzer to isolate the slow visual, then examine its query in DAX Studio (storage versus formula engine)"
+      why: Correct. Measure before changing anything.
+    - id: C
+      text: "Turn off row-level security"
+      why: Removes a control and may not be the cause.
+    - id: D
+      text: "Switch the model to DirectQuery"
+      why: Usually makes things slower, not faster.
+  answer: B
+
+- id: uni-mcq-014
+  type: mcq
+  language: m
+  topic: incremental-refresh
+  level: senior
+  tags: [trap]
+  verified: false
+  prompt: |-
+    Which column is the best partition column for incremental refresh on an enrolment table?
+  options:
+    - id: A
+      text: "ACTIVITY_DATE, because it shows the latest change"
+      why: It changes when a row is edited, so a row can appear in more than one partition and duplicate.
+    - id: B
+      text: "A date fixed for the row, such as the registration or term start date, with change detection on the activity date"
+      why: Correct. Rows stay in one partition, and changed partitions are still refreshed.
+    - id: C
+      text: "StudentKey"
+      why: Not a date, so it cannot be used with RangeStart and RangeEnd.
+    - id: D
+      text: "The refresh date"
+      why: Not a column of the data.
+  answer: B
+
+- id: uni-mcq-015
+  type: mcq
+  language: modelling
+  topic: dimension-integrity
+  level: mid
+  tags: [core]
+  verified: false
+  prompt: |-
+    A bar chart by school shows a (Blank) category with 800 students. What is the best fix?
+  options:
+    - id: A
+      text: "Filter the blank out of the visual"
+      why: Hides the problem and the totals no longer reconcile.
+    - id: B
+      text: "Map unmatched school codes to an Unknown member in the dimension upstream and test for orphans"
+      why: Correct. Fixes the integrity issue at source and makes it visible and monitored.
+    - id: C
+      text: "Delete those students"
+      why: Loses real records.
+    - id: D
+      text: "Ignore it, it is only 800 rows"
+      why: Unmanaged data quality issues accumulate.
+  answer: B
+
+- id: uni-mcq-016
+  type: mcq
+  language: dax
+  topic: dynamic-measures
+  level: senior
+  tags: [core]
+  verified: false
+  prompt: |-
+    Users want any measure in the model switchable between this academic year, last academic year, and year-on-year change. Best approach?
+  options:
+    - id: A
+      text: "A calculation group with calculation items that use SELECTEDMEASURE()"
+      why: Correct. The time logic is written once and applied to every measure.
+    - id: B
+      text: "A field parameter"
+      why: Switches which fields are shown, not how a measure is calculated.
+    - id: C
+      text: "Duplicate every measure three times"
+      why: Works but multiplies maintenance.
+    - id: D
+      text: "Use a slicer on the Date table"
+      why: Filters the period, but cannot present prior-year comparison for the same selection.
+  answer: A
+
+# ================================================================ PREDICT THE OUTPUT
+
+- id: uni-pred-001
+  type: predict
+  language: dax
+  topic: non-additive-measures
+  level: mid
+  tags: [trap]
+  verified: false
+  prompt: |-
+    What does a table visual with Module on rows show, including the Total row?
+  data:
+    ModuleResult:
+      columns: [StudentKey, Module, Mark]
+      rows:
+        - [S1, M1, 35]
+        - [S1, M2, 30]
+        - [S2, M1, 38]
+        - [S2, M2, 41]
+        - [S3, M1, 70]
+  code: |-
+    Students Failing =
+    CALCULATE ( DISTINCTCOUNT ( ModuleResult[StudentKey] ), ModuleResult[Mark] < 40 )
+  output:
+    columns: [Module, Students Failing]
+    rows:
+      - [M1, 2]
+      - [M2, 1]
+      - [Total, 2]
+  explanation: |-
+    M1 failures are S1 and S2, M2 failure is S1. The module rows add to 3, but the total is a distinct count of students with any failing mark in context: S1 and S2, so 2.
+
+- id: uni-pred-002
+  type: predict
+  language: dax
+  topic: averages
+  level: mid
+  tags: [trap]
+  verified: false
+  prompt: |-
+    What do the two measures return with no filters?
+  data:
+    ModuleResult:
+      columns: [StudentKey, Mark]
+      rows:
+        - [S1, 80]
+        - [S1, 80]
+        - [S2, 40]
+  code: |-
+    Mean Of All Marks = AVERAGE ( ModuleResult[Mark] )
+
+    Mean Of Student Means =
+    AVERAGEX ( VALUES ( ModuleResult[StudentKey] ), CALCULATE ( AVERAGE ( ModuleResult[Mark] ) ) )
+  output:
+    columns: [Measure, Value]
+    rows:
+      - [Mean Of All Marks, "66.7"]
+      - [Mean Of Student Means, "60.0"]
+  explanation: |-
+    All marks: (80 + 80 + 40) / 3 = 66.7. Student means are 80 and 40, so their average is 60. The first weights S1 twice because S1 has two results.
+
+- id: uni-pred-003
+  type: predict
+  language: dax
+  topic: percent-of-total
+  level: mid
+  tags: [core]
+  verified: false
+  prompt: |-
+    Three schools have 40, 30 and 30 students. The slicer selects Science and Arts only (Science 40, Arts 30). What do the measures show per row?
+  data:
+    Headcount by school:
+      columns: [School, Headcount]
+      rows:
+        - [Science, 40]
+        - [Arts, 30]
+        - [Law, 30]
+  code: |-
+    % Of All = DIVIDE ( [Headcount], CALCULATE ( [Headcount], ALL ( School ) ) )
+    % Of Selected = DIVIDE ( [Headcount], CALCULATE ( [Headcount], ALLSELECTED ( School ) ) )
+  output:
+    columns: [School, "% Of All", "% Of Selected"]
+    rows:
+      - [Science, "40%", "57.1%"]
+      - [Arts, "30%", "42.9%"]
+  explanation: |-
+    ALL(School) includes Law, so the denominator is 100 and the shares are 40% and 30%. ALLSELECTED keeps the slicer, so the denominator is 70 and the shares are 40/70 and 30/70.
+
+- id: uni-pred-004
+  type: predict
+  language: dax
+  topic: role-playing-dates
+  level: senior
+  tags: [trap]
+  verified: false
+  prompt: |-
+    ApplicationDate is the active relationship to Date and OfferDate is inactive. What does a table with Month on rows show for both measures, including the Total row?
+  data:
+    Application:
+      columns: [ID, ApplicationDate, OfferDate]
+      rows:
+        - [A1, "10 Jan", "20 Jan"]
+        - [A2, "12 Jan", ""]
+        - [A3, "03 Feb", "18 Feb"]
+        - [A4, "28 Jan", "05 Feb"]
+  code: |-
+    Applications = COUNTROWS ( Application )
+
+    Offers =
+    CALCULATE ( COUNT ( Application[OfferDate] ), USERELATIONSHIP ( Application[OfferDate], 'Date'[Date] ) )
+  output:
+    columns: [Month, Applications, Offers]
+    rows:
+      - [Jan, 3, 1]
+      - [Feb, 1, 2]
+      - [Total, 4, 3]
+  explanation: |-
+    Applications counts by application month: Jan has A1, A2, A4 and Feb has A3. Offers counts by offer month: A1 in Jan, and A3 and A4 in Feb. A2 has no offer and COUNT ignores blanks, so the Total is 3 rather than 4.
+
+- id: uni-pred-005
+  type: predict
+  language: sql
+  topic: joins
+  level: mid
+  tags: [trap, most-asked]
+  verified: false
+  prompt: |-
+    What does this query return?
+  data:
+    student:
+      columns: [student_key]
+      rows: [[S1], [S2], [S3]]
+    enrolment:
+      columns: [student_key, academic_year]
+      rows:
+        - [S1, "2024/25"]
+        - [S2, "2023/24"]
+  code: |-
+    select s.student_key, e.academic_year
+    from student s
+    left join enrolment e on e.student_key = s.student_key
+    where e.academic_year = '2024/25'
+  output:
+    columns: [student_key, academic_year]
+    rows:
+      - [S1, "2024/25"]
+  explanation: |-
+    The LEFT JOIN produces S2 with 2023/24 and S3 with null, but the WHERE clause then removes both, so it behaves like an inner join. To keep all students, move the condition into the ON clause: left join enrolment e on e.student_key = s.student_key and e.academic_year = '2024/25'.
+
+- id: uni-pred-006
+  type: predict
+  language: dax
+  topic: new-vs-continuing
+  level: senior
+  tags: [trap]
+  verified: false
+  prompt: |-
+    With the T2 term in context, what does each measure return?
+  data:
+    Enrolment:
+      columns: [StudentKey, Term]
+      rows:
+        - [S1, T1]
+        - [S2, T1]
+        - [S2, T2]
+        - [S3, T2]
+        - [S4, T2]
+  code: |-
+    New Students =
+    VAR _Now = VALUES ( Enrolment[StudentKey] )
+    VAR _Start = MIN ( Term[TermStartDate] )
+    VAR _Before =
+        CALCULATETABLE ( VALUES ( Enrolment[StudentKey] ), FILTER ( ALL ( Term ), Term[TermStartDate] < _Start ) )
+    RETURN COUNTROWS ( EXCEPT ( _Now, _Before ) )
+
+    Continuing Students =
+    VAR _Now = VALUES ( Enrolment[StudentKey] )
+    VAR _Start = MIN ( Term[TermStartDate] )
+    VAR _Before =
+        CALCULATETABLE ( VALUES ( Enrolment[StudentKey] ), FILTER ( ALL ( Term ), Term[TermStartDate] < _Start ) )
+    RETURN COUNTROWS ( INTERSECT ( _Now, _Before ) )
+  output:
+    columns: [Measure, Value]
+    rows:
+      - [Headcount, 3]
+      - [New Students, 2]
+      - [Continuing Students, 1]
+  explanation: |-
+    T2 students are S2, S3, S4. Earlier terms contain S1 and S2. EXCEPT leaves S3 and S4 (new), INTERSECT leaves S2 (continuing). S1 left before T2 and is in neither.
+
+# ================================================================ SPOT THE BUG
+
+- id: uni-bug-001
+  type: bug
+  language: dax
+  topic: context-transition
+  level: mid
+  tags: [trap, most-asked]
+  verified: false
+  symptom: |-
+    A calculated column on the Student table shows the same average mark for every student.
+  code: |-
+    -- calculated column on Student
+    Student Avg Mark = AVERAGE ( ModuleResult[Mark] )
+  diagnosis: |-
+    A calculated column evaluates in row context, which does not filter ModuleResult. Without context transition, AVERAGE sees the whole table every time.
+  fix: |-
+    Wrap it in CALCULATE: Student Avg Mark = CALCULATE ( AVERAGE ( ModuleResult[Mark] ) ). Better still, make it a measure, or compute it upstream if used for slicing.
+
+- id: uni-bug-002
+  type: bug
+  language: dax
+  topic: blanks
+  level: mid
+  tags: [trap, most-asked]
+  verified: false
+  symptom: |-
+    The count of students with attendance below 70% is far higher than expected and includes students who have no timetabled sessions.
+  code: |-
+    Low Attenders =
+    COUNTROWS (
+        FILTER ( VALUES ( Student[StudentKey] ), [Attendance Rate] < 0.7 )
+    )
+  diagnosis: |-
+    For students with no sessions, [Attendance Rate] is BLANK, and BLANK compares as zero, so BLANK < 0.7 is true.
+  fix: |-
+    Add a blank test: FILTER ( VALUES ( Student[StudentKey] ), NOT ISBLANK ( [Attendance Rate] ) && [Attendance Rate] < 0.7 ).
+
+- id: uni-bug-003
+  type: bug
+  language: dax
+  topic: variables
+  level: senior
+  tags: [trap]
+  verified: false
+  symptom: |-
+    The share of school headcount is 100 percent in every row.
+  code: |-
+    Share Of School =
+    VAR _Total = [Headcount]
+    RETURN DIVIDE ( [Headcount], CALCULATE ( _Total, ALL ( Programme ) ) )
+  diagnosis: |-
+    _Total is evaluated once, in the current filter context, before CALCULATE runs. CALCULATE cannot change a value that has already been computed, so numerator and denominator are the same.
+  fix: |-
+    Put the expression inside CALCULATE: DIVIDE ( [Headcount], CALCULATE ( [Headcount], ALL ( Programme ) ) ). Variables hold values, not expressions.
+
+- id: uni-bug-004
+  type: bug
+  language: dax
+  topic: relationships
+  level: mid
+  tags: [trap]
+  verified: false
+  symptom: |-
+    Offers show the same number as Applications in the grand total, even though many applications have no offer.
+  code: |-
+    Offers =
+    CALCULATE ( COUNTROWS ( Application ), USERELATIONSHIP ( Application[OfferDate], 'Date'[Date] ) )
+  diagnosis: |-
+    With no filter on the Date table, nothing is excluded, so applications with a blank offer date are counted. Month rows exclude them only because the filter on Date drops the blank-date rows.
+  fix: |-
+    Count the dates instead: CALCULATE ( COUNT ( Application[OfferDate] ), USERELATIONSHIP ( Application[OfferDate], 'Date'[Date] ) ). COUNT ignores blanks.
+
+- id: uni-bug-005
+  type: bug
+  language: dax
+  topic: all-vs-removefilters
+  level: mid
+  tags: [trap]
+  verified: false
+  symptom: |-
+    A slicer on Programme Level has no effect on the percentage of the school total.
+  code: |-
+    % Of School =
+    DIVIDE ( [Headcount], CALCULATE ( [Headcount], ALL ( Programme ) ) )
+  diagnosis: |-
+    ALL(Programme) removes every filter on the Programme table, including the Level slicer, so the denominator is the whole school regardless of the selection.
+  fix: |-
+    Remove only the filter you mean to ignore, for example REMOVEFILTERS ( Programme[Title] ), or use ALLSELECTED if the denominator should reflect the user's selections.
+
+- id: uni-bug-006
+  type: bug
+  language: m
+  topic: dates
+  level: mid
+  tags: [trap, most-asked]
+  verified: false
+  symptom: |-
+    Enrolment dates in a UK departmental spreadsheet load with the day and month swapped for some rows (03/04/2025 becomes 4 March) and fail for others (13/04/2025).
+  code: |-
+    Typed = Table.TransformColumnTypes ( Source, { { "EnrolDate", type date } } )
+  diagnosis: |-
+    The conversion uses the machine or service locale. If that is US English, text is read as month then day, so ambiguous dates are swapped and impossible ones error.
+  fix: |-
+    Pass the culture explicitly: Table.TransformColumnTypes ( Source, { { "EnrolDate", type date } }, "en-GB" ), or Date.FromText ( [EnrolDate], [Culture = "en-GB"] ).
+
+- id: uni-bug-007
+  type: bug
+  language: m
+  topic: type-conversion
+  level: mid
+  tags: [core]
+  verified: false
+  symptom: |-
+    Refresh fails with DataFormat.Error: We couldn't convert to Number, in the Mark column.
+  code: |-
+    Typed = Table.TransformColumnTypes ( Source, { { "Mark", type number } } )
+  diagnosis: |-
+    The source holds status codes in the Mark column, such as AB (absent) or EX (exempt), alongside numeric marks.
+  fix: |-
+    Separate codes from marks: create MarkStatus from rows where the value is not numeric, and a numeric Mark using try Number.From ( [Mark] ) otherwise null. Keep the status so absences are not confused with zero.
+
+- id: uni-bug-008
+  type: bug
+  language: sql
+  topic: fan-out
+  level: senior
+  tags: [trap, most-asked]
+  verified: false
+  symptom: |-
+    After joining enrolments, module results and attendance in one query, headcount is right but total credits and attendance are far too high.
+  code: |-
+    select e.student_key, sum(r.credits) as credits, sum(a.attended) as attended
+    from enrolment e
+    join module_result r on r.student_key = e.student_key
+    join attendance a on a.student_key = e.student_key
+    group by e.student_key
+  diagnosis: |-
+    Joining two fact tables to the same key multiplies rows: each result row pairs with every attendance row, so sums inflate by the other table's row count (a fan-out, or chasm, trap).
+  fix: |-
+    Aggregate each fact to the student grain first (separate CTEs), then join the aggregated results to the student or enrolment table.
+
+# ================================================================ EXPLAIN ALOUD
+
+- id: uni-exp-001
+  type: explain
+  language: dax
+  topic: totals
+  level: mid
+  tags: [confidence, most-asked]
+  verified: false
+  prompt: |-
+    A colleague says the total in your matrix does not equal the sum of the rows. How do you explain it, and how do you decide whether it is a bug?
+  keyPoints:
+    - A total is calculated in its own filter context, not by adding the rows
+    - Distinct counts and ratios are non-additive (a student on two programmes)
+    - Iterator over VALUES versus aggregation directly (SUMX over a dimension)
+    - Ask what the total should mean, then write the measure for that
+    - Check hidden rows, visual-level filters, and blanks or Unknown members
+    - Reconcile with a simple source query to confirm which number is right
+
+- id: uni-exp-002
+  type: explain
+  language: he-data
+  topic: analysis
+  level: senior
+  tags: [confidence, most-asked]
+  verified: false
+  prompt: |-
+    Continuation in one school has dropped by five percentage points. How do you investigate?
+  keyPoints:
+    - First check the number is real: definition, cohort, snapshot date, data load and join problems
+    - Confirm cohort size, since small cohorts swing wildly
+    - Break down by programme, level, mode, entry route, widening participation flags and domicile
+    - Compare against other schools and previous years
+    - Look for process or policy changes (admissions, assessment, interruption rules)
+    - Triangulate with other sources such as module pass rates, attendance, and support contacts
+    - Present findings with uncertainty, and separate what the data shows from what it suggests
+
+- id: uni-exp-003
+  type: explain
+  language: modelling
+  topic: validation
+  level: mid
+  tags: [confidence]
+  verified: false
+  prompt: |-
+    How do you validate a new Power BI report against Banner before it goes live?
+  keyPoints:
+    - Agree definitions and as-at dates with the data owner first
+    - Reconcile headline counts to a direct source query and to previously published figures
+    - Reconcile at several levels (total, school, programme) and track tolerances and explained differences
+    - Spot check individual students end to end
+    - Automated tests in the pipeline (keys unique, no orphans, row counts by term)
+    - User acceptance testing in a Test workspace with the people who own the numbers
+    - Document the definitions and known limitations
+
+- id: uni-exp-004
+  type: explain
+  language: modelling
+  topic: model-design
+  level: senior
+  tags: [confidence, most-asked]
+  verified: false
+  prompt: |-
+    Design a semantic model that supports both student progression and assessment reporting. Talk me through it.
+  keyPoints:
+    - State the questions and the grain of each fact first
+    - Facts: Enrolment, ModuleResult, Application, Attendance (and why they stay separate)
+    - Conformed dimensions: Student, Programme, School, Module, Term, Date
+    - Single-direction one-to-many relationships, role-playing dates with USERELATIONSHIP
+    - Registration as the bridge for students and modules
+    - Measures for headcount, retention, pass rates, weighted marks, and disclosure control
+    - Security (RLS by school, OLS for sensitive columns) and governance
+    - Performance and refresh design, including aggregations or pre-aggregation upstream
+
+- id: uni-exp-005
+  type: explain
+  language: modelling
+  topic: near-real-time
+  level: senior
+  tags: [confidence]
+  verified: false
+  prompt: |-
+    Design a Clearing dashboard that admissions staff refresh through the day.
+  keyPoints:
+    - Establish what freshness is needed and who the users are
+    - Source: a narrow, pre-aggregated view so the load on Banner or the warehouse is small
+    - Storage mode: Import dimensions with DirectQuery or hybrid for the live slice
+    - Measures that are cheap to calculate and few visuals on the main page
+    - As-at timestamp displayed on the report
+    - Security and data minimisation, since applicants are personal data
+    - Monitoring and a fallback if the source is slow
+
+# ================================================================ PATTERN LIBRARY: DAX
+
+- id: uni-pat-001
+  type: pattern
+  language: dax
+  topic: averages
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: Credit-weighted average mark
+  scenario: |-
+    Weighted mean mark for a student, module or programme in the current context.
+  code: |-
+    Weighted Mean Mark =
+    VAR _Marked =
+        FILTER ( ModuleResult, NOT ISBLANK ( ModuleResult[Mark] ) )
+    RETURN
+        DIVIDE (
+            SUMX ( _Marked, ModuleResult[Mark] * ModuleResult[Credits] ),
+            SUMX ( _Marked, ModuleResult[Credits] )
+        )
+  notes: |-
+    Numerator and denominator use the same set of marked rows. Check local rules on resits (capped marks, best or latest attempt) and rounding.
+
+- id: uni-pat-002
+  type: pattern
+  language: dax
+  topic: pass-rate
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: First-attempt pass rate
+  scenario: |-
+    Proportion of first attempts at or above the pass mark.
+  code: |-
+    First Attempt Pass Rate =
+    VAR _First =
+        CALCULATETABLE ( ModuleResult, ModuleResult[AttemptNo] = 1, NOT ISBLANK ( ModuleResult[Mark] ) )
+    VAR _Passed =
+        COUNTROWS ( FILTER ( _First, ModuleResult[Mark] >= 40 ) )
+    RETURN
+        DIVIDE ( _Passed, COUNTROWS ( _First ) )
+  notes: |-
+    Pass mark is an assumption (40). Put it in a parameter table or a model property so it can differ by level (for example postgraduate).
+
+- id: uni-pat-003
+  type: pattern
+  language: dax
+  topic: iterators
+  level: senior
+  tags: [interview-staple]
+  verified: false
+  name: Students who have passed a full year
+  scenario: |-
+    Count students with at least 120 passed credits in the selected academic year.
+  code: |-
+    Credits Passed =
+    CALCULATE ( SUM ( ModuleResult[Credits] ), ModuleResult[Mark] >= 40 )
+
+    Students Passing Year =
+    COUNTROWS (
+        FILTER ( VALUES ( Student[StudentKey] ), [Credits Passed] >= 120 )
+    )
+  notes: |-
+    A student who passes a module on resit has a failing and a passing row, and the failing one is excluded by the filter. Make sure a module cannot count twice if two passing attempts exist. Real progression rules (compensation, condoned credit) usually need upstream logic.
+
+- id: uni-pat-004
+  type: pattern
+  language: dax
+  topic: attendance
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: Attendance rate and low attenders
+  scenario: |-
+    Attendance percentage and the count of students below a threshold, handling students with no sessions.
+  code: |-
+    Attendance Rate =
+    DIVIDE ( SUM ( Attendance[Attended] ), COUNTROWS ( Attendance ) )
+
+    Students Below 70% =
+    COUNTROWS (
+        FILTER (
+            VALUES ( Student[StudentKey] ),
+            NOT ISBLANK ( [Attendance Rate] ) && [Attendance Rate] < 0.7
+        )
+    )
+  notes: |-
+    Without the ISBLANK test, students with no timetabled sessions are counted as low attenders. Take the threshold from a parameter table.
+
+- id: uni-pat-005
+  type: pattern
+  language: dax
+  topic: new-vs-continuing
+  level: senior
+  tags: [interview-staple]
+  verified: false
+  name: New students in a term
+  scenario: |-
+    Students in the current term who have no enrolment in any earlier term.
+  code: |-
+    New Students =
+    VAR _Now = VALUES ( Enrolment[StudentKey] )
+    VAR _Start = MIN ( Term[TermStartDate] )
+    VAR _Before =
+        CALCULATETABLE (
+            VALUES ( Enrolment[StudentKey] ),
+            FILTER ( ALL ( Term ), Term[TermStartDate] < _Start )
+        )
+    RETURN
+        COUNTROWS ( EXCEPT ( _Now, _Before ) )
+  notes: |-
+    Other filters stay active (programme, school), so a student new to the university but moving programme counts as new to that programme. Use INTERSECT for continuing students. For first-ever enrolment, compute a first-enrolment term flag upstream.
+
+- id: uni-pat-006
+  type: pattern
+  language: dax
+  topic: academic-calendar
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: Academic year to date applications
+  scenario: |-
+    Applications from the start of the academic year (or cycle) up to the latest date in context.
+  code: |-
+    AY To Date Applications =
+    VAR _ay   = MAX ( 'Date'[AcademicYearStart] )
+    VAR _last = MAX ( 'Date'[Date] )
+    RETURN
+        CALCULATE (
+            [Applications],
+            FILTER ( ALL ( 'Date' ), 'Date'[AcademicYearStart] = _ay && 'Date'[Date] <= _last )
+        )
+  notes: |-
+    When several academic years are in context, MAX picks the latest. For same-point-last-cycle comparisons shift _ay by one and align the day offset.
+
+- id: uni-pat-007
+  type: pattern
+  language: dax
+  topic: distributions
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: Mark band histogram
+  scenario: |-
+    Count results in each band using a disconnected Bands table (Band, Lower, Upper) with bands such as 0 to 40, 40 to 50, 50 to 60, 60 to 70, 70 to 101.
+  code: |-
+    Results In Band =
+    VAR _lo = MIN ( Bands[Lower] )
+    VAR _hi = MAX ( Bands[Upper] )
+    RETURN
+        CALCULATE (
+            COUNTROWS ( ModuleResult ),
+            NOT ISBLANK ( ModuleResult[Mark] ),
+            ModuleResult[Mark] >= _lo,
+            ModuleResult[Mark] < _hi
+        )
+  notes: |-
+    Lower is inclusive and Upper exclusive, so a decimal mark such as 69.5 falls in exactly one band. The blank test matters because BLANK compares as zero. Classification boundaries are institution-specific.
+
+- id: uni-pat-008
+  type: pattern
+  language: dax
+  topic: role-playing-dates
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: Offers by offer date
+  scenario: |-
+    Count applications by the month the offer was made, not the month of application.
+  code: |-
+    Offers =
+    CALCULATE (
+        COUNT ( Application[OfferDate] ),
+        USERELATIONSHIP ( Application[OfferDate], 'Date'[Date] )
+    )
+  notes: |-
+    Counting the date column excludes applications with no offer at every level, including the grand total. Repeat for AcceptDate.
+
+- id: uni-pat-009
+  type: pattern
+  language: dax
+  topic: as-at
+  level: senior
+  tags: [interview-staple]
+  verified: false
+  name: Active enrolments as at a date
+  scenario: |-
+    Students with an enrolment spanning the chosen as-at date, using a disconnected AsAt date table.
+  code: |-
+    Active Students As At =
+    VAR _asAt = MAX ( AsAt[Date] )
+    RETURN
+        CALCULATE (
+            DISTINCTCOUNT ( Enrolment[StudentKey] ),
+            FILTER (
+                Enrolment,
+                Enrolment[StartDate] <= _asAt
+                    && ( ISBLANK ( Enrolment[EndDate] ) || Enrolment[EndDate] >= _asAt )
+            )
+        )
+  notes: |-
+    Open-ended enrolments have a blank end date. Define whether the end date is inclusive. Filtering the whole fact table can be slow at scale, so consider precomputing validity upstream.
+
+- id: uni-pat-010
+  type: pattern
+  language: security
+  topic: rls
+  level: senior
+  tags: [interview-staple]
+  verified: false
+  name: Dynamic RLS by school
+  scenario: |-
+    A Security table (Email, SchoolCode) maps staff to schools, and one role filters the School table.
+  code: |-
+    -- Filter expression on the School table in role "SchoolAccess"
+    CONTAINS (
+        Security,
+        Security[Email], USERPRINCIPALNAME (),
+        Security[SchoolCode], School[SchoolCode]
+    )
+  notes: |-
+    Staff with several schools simply have several rows. Plan for university-wide roles, test with View as and with real viewer accounts, and remember workspace roles with edit rights bypass RLS.
+
+- id: uni-pat-011
+  type: pattern
+  language: dax
+  topic: academic-calendar
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: Date table with academic year
+  scenario: |-
+    Calculated Date table for academic years starting 1 August.
+  code: |-
+    Date =
+    ADDCOLUMNS (
+        CALENDAR ( DATE ( 2015, 8, 1 ), DATE ( 2035, 7, 31 ) ),
+        "Month Number", MONTH ( [Date] ),
+        "Month", FORMAT ( [Date], "MMM" ),
+        "AcademicYearStart", IF ( MONTH ( [Date] ) >= 8, YEAR ( [Date] ), YEAR ( [Date] ) - 1 ),
+        "Academic Year",
+            VAR _s = IF ( MONTH ( [Date] ) >= 8, YEAR ( [Date] ), YEAR ( [Date] ) - 1 )
+            RETURN _s & "/" & RIGHT ( FORMAT ( _s + 1, "0" ), 2 )
+    )
+  notes: |-
+    Add an academic month number and sort Month by it. Mark the table as the date table. Academic year start is institution-specific, and many institutions already have a governed calendar upstream to use instead.
+
+# ================================================================ PATTERN LIBRARY: M
+
+- id: uni-pat-012
+  type: pattern
+  language: m
+  topic: unpivot
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: Unpivot assessment components
+  scenario: |-
+    Turn Coursework, Exam, Practical columns into one row per component.
+  code: |-
+    Unpivoted = Table.UnpivotOtherColumns (
+        Source,
+        { "StudentID", "ModuleCode" },
+        "Component",
+        "Mark"
+    )
+  notes: |-
+    Unpivoting other columns survives new component columns. Follow with a type step and handle status codes in Mark before converting to number.
+
+- id: uni-pat-013
+  type: pattern
+  language: m
+  topic: merges
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: Students with no enrolment
+  scenario: |-
+    Find students in the extract that are missing from the Enrolment query.
+  code: |-
+    let
+        Joined = Table.NestedJoin ( Students, { "StudentKey" }, Enrolment, { "StudentKey" }, "Match", JoinKind.LeftAnti ),
+        Result = Table.RemoveColumns ( Joined, { "Match" } )
+    in
+        Result
+  notes: |-
+    LeftAnti returns left rows with no right match. For deterministic comparison, standardise the key in both queries first.
+
+- id: uni-pat-014
+  type: pattern
+  language: m
+  topic: parameters
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: Parameterised academic year filter
+  scenario: |-
+    Filter a source by an academic year parameter that can differ between Dev, Test and Prod.
+  code: |-
+    let
+        Source = Sql.Database ( pServer, pDatabase ),
+        Enrolment = Source{ [Schema = "mart", Item = "fct_enrolment"] }[Data],
+        Filtered = Table.SelectRows ( Enrolment, each [AcademicYearStart] >= pFirstAcademicYear )
+    in
+        Filtered
+  notes: |-
+    A simple comparison against a parameter folds. Deployment pipeline rules can swap pServer, pDatabase and pFirstAcademicYear per stage.
+
+- id: uni-pat-015
+  type: pattern
+  language: m
+  topic: dates
+  level: junior
+  tags: [interview-staple]
+  verified: false
+  name: UK date parsing
+  scenario: |-
+    Convert text dates in dd/mm/yyyy format regardless of the machine locale.
+  code: |-
+    Typed = Table.TransformColumnTypes ( Source, { { "EnrolDate", type date } }, "en-GB" )
+  notes: |-
+    Culture is the third argument. Without it, results depend on the locale of the machine or the service.
+
+# ================================================================ PATTERN LIBRARY: SQL (Snowflake)
+
+- id: uni-pat-016
+  type: pattern
+  language: sql
+  topic: window-functions
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: Final attempt per student per module
+  scenario: |-
+    One row per student and module, using the latest attempt.
+  code: |-
+    select *
+    from {{ ref('stg_module_result') }}
+    qualify row_number() over (
+        partition by student_key, module_key
+        order by attempt_no desc
+    ) = 1
+  notes: |-
+    Regulations decide whether the final mark is the latest attempt, the best, or a capped resit mark. Encode the rule once, in the warehouse.
+
+- id: uni-pat-017
+  type: pattern
+  language: sql
+  topic: retention
+  level: senior
+  tags: [interview-staple]
+  verified: false
+  name: Cohort retention in SQL
+  scenario: |-
+    Entrants in 2023/24 who are enrolled in 2024/25.
+  code: |-
+    with entrants as (
+        select distinct student_key
+        from enrolment
+        where academic_year = '2023/24'
+          and entry_year_flag = 1
+    ),
+    next_year as (
+        select distinct student_key
+        from enrolment
+        where academic_year = '2024/25'
+    )
+    select
+        count(*)                            as cohort,
+        count(n.student_key)                as retained,
+        count(n.student_key) / nullif(count(*), 0) as retention_rate
+    from entrants e
+    left join next_year n using (student_key)
+  notes: |-
+    LEFT JOIN keeps cohort members who left, and COUNT over the right-hand key counts only matches. Exclusions and cohort filters (level, mode, domicile) must follow the agreed definition. entry_year_flag is a placeholder.
+
+- id: uni-pat-018
+  type: pattern
+  language: sql
+  topic: as-at-join
+  level: senior
+  tags: [interview-staple]
+  verified: false
+  name: As-at join to a history dimension
+  scenario: |-
+    Attach the department that applied when each result was recorded.
+  code: |-
+    select r.*, d.department_code
+    from module_result r
+    join dim_student_history d
+      on  d.student_key = r.student_key
+      and r.result_date >= d.valid_from
+      and r.result_date <  coalesce(d.valid_to, '9999-12-31'::date)
+  notes: |-
+    Half-open intervals prevent double matches at version boundaries. Add a dbt test that validity ranges do not overlap per student.
+
+- id: uni-pat-019
+  type: pattern
+  language: sql
+  topic: window-functions
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: Cumulative applications by week
+  scenario: |-
+    Weekly and cumulative application counts for the cycle.
+  code: |-
+    select
+        date_trunc('week', application_date)                       as week_start,
+        count(*)                                                    as applications,
+        sum(count(*)) over (order by date_trunc('week', application_date)) as cumulative_applications
+    from application
+    where academic_year_start = 2025
+    group by date_trunc('week', application_date)
+    order by week_start
+  notes: |-
+    A window function can wrap an aggregate. Add a partition by programme or school for per-group running totals.
+
+- id: uni-pat-020
+  type: pattern
+  language: sql
+  topic: data-quality
+  level: mid
+  tags: [interview-staple]
+  verified: false
+  name: Orphan and duplicate checks
+  scenario: |-
+    Quick checks before loading a model.
+  code: |-
+    -- Fact rows whose school code is missing from the dimension
+    select count(*) as orphan_rows
+    from fct_enrolment f
+    left join dim_school s on s.school_code = f.school_code
+    where s.school_code is null;
+
+    -- Duplicate keys in a dimension
+    select student_key, count(*) as n
+    from dim_student
+    group by student_key
+    having count(*) > 1;
+  notes: |-
+    In dbt these become relationships and unique tests. Track the counts over time rather than only failing the build.
+
+- id: uni-pat-021
+  type: pattern
+  language: sql
+  topic: pivoting
+  level: junior
+  tags: [interview-staple]
+  verified: false
+  name: Conditional aggregation pivot
+  scenario: |-
+    One row per student and module with Coursework, Exam and Practical marks as columns.
+  code: |-
+    select
+        student_key,
+        module_key,
+        max(case when component = 'Coursework' then mark end) as coursework,
+        max(case when component = 'Exam'       then mark end) as exam,
+        max(case when component = 'Practical'  then mark end) as practical
+    from assessment_component
+    group by student_key, module_key
+  notes: |-
+    Each student and component pair should be unique, otherwise MAX hides duplicates. Snowflake also has PIVOT, but conditional aggregation is portable and easier to extend.
